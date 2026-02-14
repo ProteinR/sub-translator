@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,7 +19,6 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/playwright-community/playwright-go"
-	"github.com/sirupsen/logrus"
 	"gopkg.in/telebot.v4"
 )
 
@@ -50,12 +51,13 @@ type Config struct {
 func getScriptConfig() Config {
 	// Загружаем .env файл, если он есть
 	if err := godotenv.Load(); err != nil {
-		log.Println("Info: .env file not found, using defaults or environment variables")
+		slog.Info("Info: .env file not found, using defaults or environment variables")
 	}
 
 	data, err := os.ReadFile("prompt.txt")
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Failed to read prompt.txt", "error", err)
+		os.Exit(1)
 	}
 	prompt := string(data)
 	return Config{
@@ -121,14 +123,55 @@ type GeminiResponse struct {
 	Results []TranslationItem `json:"results"`
 }
 
+func setupLogger() *os.File {
+	now := time.Now()
+	// Папка: logs/YYYY-MM-DD
+	dirName := filepath.Join("logs", now.Format("2006-01-02"))
+	if err := os.MkdirAll(dirName, 0755); err != nil {
+		log.Fatalf("Could not create log directory: %v", err)
+	}
+
+	// Файл: HH-MM-SS.log
+	fileName := filepath.Join(dirName, fmt.Sprintf("%s.log", now.Format("15-04-05")))
+	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("Could not open log file: %v", err)
+	}
+
+	// Используем io.MultiWriter для записи и в файл, и в консоль
+	multiWriter := io.MultiWriter(os.Stdout, file)
+
+	// Настраиваем slog
+	handler := slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+		// Можно добавить кастомный формат времени, если нужно
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				a.Value = slog.StringValue(a.Value.Time().Format("15:04:05"))
+			}
+			return a
+		},
+	})
+
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	return file
+}
+
 func main() {
-	fmt.Printf("🚀 Lokalise Translator Automation v%s\n", AppVersion)
+	// Настройка логгера
+	logFile := setupLogger()
+	defer logFile.Close()
+
+	slog.Info("🚀 Loka Translator Automation started", "version", AppVersion)
 	config := getScriptConfig()
 
 	// Запуск Playwright
 	pw, err := playwright.Run()
 	if err != nil {
-		log.Fatalf("could not start playwright: %v", err)
+		slog.Error("could not start playwright", "error", err)
+		os.Exit(1)
 	}
 	defer pw.Stop()
 
@@ -137,26 +180,29 @@ func main() {
 		Headless: playwright.Bool(false),
 	})
 	if err != nil {
-		log.Fatalf("could not launch browser: %v", err)
+		slog.Error("could not launch browser", "error", err)
+		os.Exit(1)
 	}
 	defer browser.Close()
 
 	// 1. Проверка авторизации
 	if err := ensureLogin(browser, config); err != nil {
-		log.Fatalf("Login failed: %v", err)
+		slog.Error("Login failed", "error", err)
+		os.Exit(1)
 	}
 
 	// 2. Чтение списка проектов
 	projects, err := readProjects(config.InputFile)
 	if err != nil {
-		log.Fatalf("Could not read projects file: %v", err)
+		slog.Error("Could not read projects file", "error", err)
+		os.Exit(1)
 	}
 	if len(projects) == 0 {
-		fmt.Println("⚠️ Файл с проектами пуст.")
+		slog.Warn("⚠️ Файл с проектами пуст.")
 		return
 	}
 
-	fmt.Printf("📋 Найдено проектов: %d. Запуск в %d потока(ов)...\n", len(projects), config.MaxConcurrency)
+	slog.Info("📋 Найдено проектов", "count", len(projects), "threads", config.MaxConcurrency)
 
 	// 3. Запуск воркеров
 	var wg sync.WaitGroup
@@ -171,11 +217,11 @@ func main() {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			fmt.Printf("🚀 Старт обработки: %s\n", projectURL)
+			slog.Info("🚀 Старт обработки", "url", projectURL)
 			filename, err := processProject(browser, projectURL, config)
 
 			if err != nil {
-				fmt.Printf("❌ Ошибка обработки %s %s: %v\n", filename, projectURL, err)
+				slog.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
 				messageText := fmt.Sprintf("❌ Ошибка обработки:\n<a href=\"%s\">%s</a>", projectURL, filename)
 				notifyTelegram(config, tgBot, messageText)
 				return
@@ -183,17 +229,17 @@ func main() {
 
 			// --- УДАЛЕНИЕ ИЗ ФАЙЛА ПРИ УСПЕХЕ ---
 			if err := removeURLFromFile(config.InputFile, projectURL); err != nil {
-				fmt.Printf("⚠️ Ошибка при удалении из файла %s: %v\n", projectURL, err)
+				slog.Warn("⚠️ Ошибка при удалении из файла", "url", projectURL, "error", err)
 			}
 
-			fmt.Printf("✅ Завершено: %s\n", projectURL)
+			slog.Info("✅ Завершено", "url", projectURL)
 			messageText := fmt.Sprintf("✅ Завершено:\n<a href=\"%s\">%s</a>", projectURL, filename)
 			notifyTelegram(config, tgBot, messageText)
 		}(url)
 	}
 
 	wg.Wait()
-	fmt.Println("🏁 Все проекты обработаны!")
+	slog.Info("🏁 Все проекты обработаны!")
 }
 
 var fileMutex sync.Mutex // Глобальный мьютекс для защиты файла
@@ -226,7 +272,7 @@ func removeURLFromFile(filePath string, urlToRemove string) error {
 func notifyTelegram(config Config, tgBot *telebot.Bot, messageText string) {
 	chatIdInt64, err := strconv.ParseInt(config.ChatId, 10, 64)
 	if err != nil {
-		fmt.Printf("Ошибка конвертации телеграм ChatId: %v", err)
+		slog.Error("Ошибка конвертации телеграм ChatId", "error", err)
 		return
 	}
 
@@ -243,11 +289,11 @@ func notifyTelegram(config Config, tgBot *telebot.Bot, messageText string) {
 // ensureLogin проверяет наличие файла куки. Если нет - просит залогиниться и сохраняет.
 func ensureLogin(browser playwright.Browser, config Config) error {
 	if _, err := os.Stat(config.AuthStateFile); err == nil {
-		fmt.Println("🔑 Найден файл авторизации, пропускаем вход.")
+		slog.Info("🔑 Найден файл авторизации, пропускаем вход.")
 		return nil
 	}
 
-	fmt.Println("⚠️ Файл авторизации не найден. Требуется вход.")
+	slog.Warn("⚠️ Файл авторизации не найден. Требуется вход.")
 	context, err := browser.NewContext()
 	if err != nil {
 		return err
@@ -267,7 +313,7 @@ func ensureLogin(browser playwright.Browser, config Config) error {
 	err = byId(page, "onetrust-accept-btn-handler").Click()
 	if err != nil {
 		// panic("could not close accwpt cookies: " + err.Error())
-		fmt.Println("could not close accwpt cookies: " + err.Error())
+		slog.Warn("could not close accwpt cookies", "error", err)
 	}
 
 	fmt.Println("⌨️  Пожалуйста, залогиньтесь в браузере. После успешного входа нажмите ENTER в этой консоли...")
@@ -277,7 +323,7 @@ func ensureLogin(browser playwright.Browser, config Config) error {
 	if _, err := context.StorageState(config.AuthStateFile); err != nil {
 		return fmt.Errorf("could not save storage state: %v", err)
 	}
-	fmt.Println("💾 Авторизация сохранена в", config.AuthStateFile)
+	slog.Info("💾 Авторизация сохранена", "file", config.AuthStateFile)
 	return nil
 }
 
@@ -327,6 +373,10 @@ func processProject(browser playwright.Browser, projectURL string, config Config
 	if err != nil {
 		return "", fmt.Errorf("could not get filename: %v", err)
 	}
+	// Очистка имени файла от неразрывных пробелов и лишних символов
+	filename = strings.TrimSpace(strings.ReplaceAll(filename, "\u00a0", " "))
+	filename = strings.TrimPrefix(filename, "Filename: ")
+	filename = strings.TrimSpace(filename)
 
 	// 1. Сбор пустых строк
 	translationMap, err := scrollAndCollect(page, config, filename)
@@ -334,7 +384,7 @@ func processProject(browser playwright.Browser, projectURL string, config Config
 		return filename, fmt.Errorf("scroll error: %v", err)
 	}
 	if len(translationMap) == 0 {
-		fmt.Printf("ℹ️ [%s] Пустых строк не найдено.\n", projectURL)
+		slog.Info("ℹ️ Пустых строк не найдено", "url", projectURL)
 		return filename, nil
 	}
 
@@ -359,7 +409,7 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 	maxNoNewRetries := 5
 	totalScrolled := 0.0
 
-	fmt.Printf("\n🔍 Начинаю поиск пустых строк в файле %s...", filename)
+	slog.Info("🔍 Начинаю поиск пустых строк", "file", filename)
 
 	for noNewElementsCount < maxNoNewRetries {
 		newAddedThisStep := 0
@@ -415,12 +465,7 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 	_ = page.Mouse().Wheel(0, -totalScrolled)
 
 	// КРАСИВЫЙ ФИНАЛЬНЫЙ ВЫВОД
-	fmt.Println("")
-	fmt.Println("--------------------------------------------------")
-	fmt.Printf("✅ Сбор данных для файла %s завершен!\n", filename)
-	fmt.Printf("📦 Всего проверено строк: %d\n", len(seen))
-	fmt.Printf("📥 Собрано для перевода (пустых): %d\n", len(results))
-	fmt.Println("--------------------------------------------------\n")
+	slog.Info("✅ Сбор данных завершен", "file", filename, "checked", len(seen), "collected", len(results))
 
 	return results, nil
 }
@@ -432,7 +477,7 @@ func mockTranslateWithGemini(tmap []TranslationItem, config Config) ([]Translati
 }
 
 func translateWithGemini(tmap []TranslationItem, config Config) ([]TranslationItem, error) {
-	fmt.Println("⏳ Запрос к Gemini...")
+	slog.Info("⏳ Запрос к Gemini...")
 
 	var payloadItems []TranslationItem
 	for _, v := range tmap {
@@ -537,7 +582,7 @@ func sanitizeJSON(input string) string {
 }
 
 func fillTranslations(page playwright.Page, items []TranslationItem, config Config) error {
-	fmt.Println("✍️ Вставка переводов...")
+	slog.Info("✍️ Вставка переводов...")
 	for _, item := range items {
 		// fmt.Printf("[%d/%d] ID: %s | Вставка...\n", i+1, len(items), item.ID)
 
@@ -590,7 +635,7 @@ func newTgBot(token string) *telebot.Bot {
 	}
 	botSdk, err := telebot.NewBot(pref)
 	if err != nil {
-		logrus.Errorf("Ошибка создания бота: %s", err.Error())
+		slog.Error("Ошибка создания бота", "error", err)
 		panic(err)
 	}
 	return botSdk
