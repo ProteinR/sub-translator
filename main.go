@@ -36,6 +36,7 @@ type Config struct {
 	AuthStateFile   string
 	MaxConcurrency  int
 	TargetLangID    string
+	TargetLang      string
 	Model           string
 	Prompt          string
 	TgBotToken      string
@@ -54,7 +55,8 @@ func getScriptConfig() Config {
 		slog.Info("Info: .env file not found, using defaults or environment variables")
 	}
 
-	data, err := os.ReadFile("prompt.txt")
+	targetLangText := getEnv("TARGET_LANG", "PL")
+	data, err := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", targetLangText))
 	if err != nil {
 		slog.Error("Failed to read prompt.txt", "error", err)
 		os.Exit(1)
@@ -65,7 +67,8 @@ func getScriptConfig() Config {
 		InputFile:       getEnv("INPUT_FILE", "projects.txt"),
 		AuthStateFile:   getEnv("AUTH_STATE_FILE", "auth.json"),
 		MaxConcurrency:  getIntEnv("MAX_CONCURRENCY", 1),
-		TargetLangID:    getEnv("TARGET_LANG_ID", "748"),
+		TargetLangID:    targetLangIdByText(targetLangText),
+		TargetLang:      targetLangText,
 		Model:           getEnv("MODEL", "gemini-2.5-flash"),
 		Prompt:          prompt,
 		ScrollDelay:     getDurationEnv("SCROLL_DELAY_MS", 2000),
@@ -77,6 +80,14 @@ func getScriptConfig() Config {
 		ChatId:          getEnv("CHAT_ID", ""),
 		BaseURL:         getEnv("BASE_URL", "https://app.lokalise.com"),
 	}
+}
+
+func targetLangIdByText(text string) string {
+	if text == "" || text == "PL" {
+		return "748"
+	}
+
+	return "640"
 }
 
 func getEnv(key, fallback string) string {
@@ -430,7 +441,7 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 			seen[id] = true
 			newAddedThisStep++
 
-			// Проверка на пустоту
+			// Проверка, что перевода еще нет
 			targetCell := row.Locator(fmt.Sprintf(".cell-trans[data-lang-id='%s']", config.TargetLangID))
 			isEmpty, _ := targetCell.Locator(".empty").Count()
 			cellText, _ := targetCell.InnerText()
@@ -489,7 +500,7 @@ func translateWithGemini(tmap []TranslationItem, config Config) ([]TranslationIt
 
 IMPORTANT: Respond ONLY with a valid JSON object. 
 Do NOT repeat the translation twice in the output string.
-Structure: {"results": [{"id": "ID_HERE", "translation": "POLISH_TEXT_HERE"}, ...]}
+Structure: {"results": [{"id": "ID_HERE", "translation": "TRANSLATED_TEXT_HERE"}, ...]}
 
 Data to translate: %s`, config.Prompt, func() string { b, _ := json.Marshal(payloadItems); return string(b) }())
 
