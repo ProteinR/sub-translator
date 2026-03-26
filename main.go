@@ -25,7 +25,7 @@ import (
 // ============================================================
 // 0. ВЕРСИЯ
 // ============================================================
-const AppVersion = "1.0.0"
+const AppVersion = "1.1.0"
 
 // ============================================================
 // 1. КОНФИГУРАЦИЯ
@@ -36,7 +36,7 @@ type Config struct {
 	AuthStateFile   string
 	MaxConcurrency  int
 	TargetLangID    string
-	TargetLang      string
+	TranslateToLang string
 	Model           string
 	Prompt          string
 	TgBotToken      string
@@ -55,8 +55,8 @@ func getScriptConfig() Config {
 		slog.Info("Info: .env file not found, using defaults or environment variables")
 	}
 
-	targetLangText := getEnv("TARGET_LANG", "PL")
-	data, err := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", targetLangText))
+	translateToLangText := getEnv("TRANSLATE_TO", "PL")
+	data, err := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", translateToLangText))
 	if err != nil {
 		slog.Error("Failed to read prompt.txt", "error", err)
 		os.Exit(1)
@@ -67,8 +67,8 @@ func getScriptConfig() Config {
 		InputFile:       getEnv("INPUT_FILE", "projects.txt"),
 		AuthStateFile:   getEnv("AUTH_STATE_FILE", "auth.json"),
 		MaxConcurrency:  getIntEnv("MAX_CONCURRENCY", 1),
-		TargetLangID:    targetLangIdByText(targetLangText),
-		TargetLang:      targetLangText,
+		TargetLangID:    targetLangIdByText(translateToLangText),
+		TranslateToLang: translateToLangText,
 		Model:           getEnv("MODEL", "gemini-2.5-flash"),
 		Prompt:          prompt,
 		ScrollDelay:     getDurationEnv("SCROLL_DELAY_MS", 2000),
@@ -196,13 +196,7 @@ func main() {
 	}
 	defer browser.Close()
 
-	// 1. Проверка авторизации
-	if err := ensureLogin(browser, config); err != nil {
-		slog.Error("Login failed", "error", err)
-		os.Exit(1)
-	}
-
-	// 2. Чтение списка проектов
+	// 1. Чтение списка проектов
 	projects, err := readProjects(config.InputFile)
 	if err != nil {
 		slog.Error("Could not read projects file", "error", err)
@@ -213,23 +207,43 @@ func main() {
 		return
 	}
 
+	// 2. Проверка авторизации на первом проекте (создает контекст и первую страницу)
+	context, firstPage, err := ensureLogin(browser, config, projects[0])
+	if err != nil {
+		slog.Error("Login failed", "error", err)
+		os.Exit(1)
+	}
+	defer context.Close()
+
 	slog.Info("📋 Найдено проектов", "count", len(projects), "threads", config.MaxConcurrency)
+
+	// Создаем пул страниц (по одной на каждый поток)
+	pagePool := make(chan playwright.Page, config.MaxConcurrency)
+	pagePool <- firstPage // Кладем первую вкладку, которую уже открыли при логине
+	for i := 1; i < config.MaxConcurrency; i++ {
+		p, err := context.NewPage()
+		if err == nil {
+			pagePool <- p
+		}
+	}
 
 	// 3. Запуск воркеров
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, config.MaxConcurrency)
 	tgBot := newTgBot(config.TgBotToken)
 
 	for _, url := range projects {
 		wg.Add(1)
-		sem <- struct{}{} // Захват слота
 
 		go func(projectURL string) {
 			defer wg.Done()
-			defer func() { <-sem }()
+
+			// Захватываем страницу из пула
+			page := <-pagePool
+			// Возвращаем страницу в пул по завершении
+			defer func() { pagePool <- page }()
 
 			slog.Info("🚀 Старт обработки", "url", projectURL)
-			filename, err := processProject(browser, projectURL, config)
+			filename, err := processProject(page, projectURL, config)
 
 			if err != nil {
 				slog.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
@@ -298,46 +312,72 @@ func notifyTelegram(config Config, tgBot *telebot.Bot, messageText string) {
 }
 
 // ensureLogin проверяет наличие файла куки. Если нет - просит залогиниться и сохраняет.
-func ensureLogin(browser playwright.Browser, config Config) error {
+// Возвращает созданный контекст браузера и первую открытую вкладку.
+func ensureLogin(browser playwright.Browser, config Config, checkURL string) (playwright.BrowserContext, playwright.Page, error) {
+	var ctxOpts playwright.BrowserNewContextOptions
+
 	if _, err := os.Stat(config.AuthStateFile); err == nil {
-		slog.Info("🔑 Найден файл авторизации, пропускаем вход.")
-		return nil
+		slog.Info("🔑 Найден файл авторизации, проверяем валидность...")
+		ctxOpts.StorageStatePath = playwright.String(config.AuthStateFile)
+	} else {
+		slog.Warn("⚠️ Файл авторизации не найден. Требуется вход.")
 	}
 
-	slog.Warn("⚠️ Файл авторизации не найден. Требуется вход.")
-	context, err := browser.NewContext()
+	context, err := browser.NewContext(ctxOpts)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer context.Close()
 
 	page, err := context.NewPage()
 	if err != nil {
-		return err
+		context.Close()
+		return nil, nil, err
 	}
 
-	// Переходим на страницу входа (или любую страницу проекта, редиректнет на логин)
-	if _, err = page.Goto(config.BaseURL + "/signin"); err != nil {
-		return err
+	// Открываем сразу страницу проекта
+	if _, err = page.Goto(checkURL); err != nil {
+		context.Close()
+		return nil, nil, err
 	}
 
-	err = byId(page, "onetrust-accept-btn-handler").Click()
-	if err != nil {
-		// panic("could not close accwpt cookies: " + err.Error())
-		slog.Warn("could not close accwpt cookies", "error", err)
+	// Ждем появления h1 с текстом "Log in" максимум 3 секунды
+	err = page.Locator("h1", playwright.PageLocatorOptions{
+		HasText: "Log in",
+	}).WaitFor(playwright.LocatorWaitForOptions{
+		Timeout: playwright.Float(3000),
+	})
+
+	if err == nil {
+		// h1 "Log in" найден -> куки устарели (или их не было)
+		if ctxOpts.StorageStatePath != nil {
+			slog.Warn("⚠️ Куки устарели. Удаляем старый файл...")
+			os.Remove(config.AuthStateFile)
+		} else {
+			slog.Warn("⚠️ Требуется вход.")
+		}
+
+		err = byId(page, "onetrust-accept-btn-handler").Click()
+		if err != nil {
+			slog.Warn("could not close accept cookies", "error", err)
+		}
+
+		fmt.Println("⌨️  Пожалуйста, залогиньтесь в браузере. После успешного входа нажмите ENTER в этой консоли...")
+		fmt.Scanln()
+
+		// Сохраняем состояние (куки, local storage)
+		if _, err := context.StorageState(config.AuthStateFile); err != nil {
+			return context, page, fmt.Errorf("could not save storage state: %v", err)
+		}
+		slog.Info("💾 Авторизация сохранена", "file", config.AuthStateFile)
+	} else {
+		// Ошибка по таймауту -> h1 "Log in" не найден -> куки валидны
+		if ctxOpts.StorageStatePath != nil {
+			slog.Info("✅ Куки валидны, мы уже в проекте.")
+		}
 	}
 
-	fmt.Println("⌨️  Пожалуйста, залогиньтесь в браузере. После успешного входа нажмите ENTER в этой консоли...")
-	fmt.Scanln()
-
-	// Сохраняем состояние (куки, local storage)
-	if _, err := context.StorageState(config.AuthStateFile); err != nil {
-		return fmt.Errorf("could not save storage state: %v", err)
-	}
-	slog.Info("💾 Авторизация сохранена", "file", config.AuthStateFile)
-	return nil
+	return context, page, nil
 }
-
 func byId(page playwright.Page, id string) playwright.Locator {
 	selector := fmt.Sprintf("[id='%s']", id)
 	return page.Locator(selector)
@@ -361,23 +401,59 @@ func readProjects(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func processProject(browser playwright.Browser, projectURL string, config Config) (string, error) {
-	// Создаем контекст с сохраненными куками
-	context, err := browser.NewContext(playwright.BrowserNewContextOptions{
-		StorageStatePath: playwright.String(config.AuthStateFile),
-	})
-	if err != nil {
-		return "", fmt.Errorf("could not create context: %v", err)
-	}
-	defer context.Close()
-
-	page, err := context.NewPage()
-	if err != nil {
-		return "", fmt.Errorf("could not create page: %v", err)
-	}
-
-	if _, err = page.Goto(projectURL); err != nil {
+func processProject(page playwright.Page, projectURL string, config Config) (string, error) {
+	if _, err := page.Goto(projectURL); err != nil {
 		return "", fmt.Errorf("could not goto url: %v", err)
+	}
+
+	// Проверяем, включен ли режим "Bilingual"
+	bilingualBtn := page.Locator(".single-view-btn")
+	if err := bilingualBtn.WaitFor(playwright.LocatorWaitForOptions{
+		Timeout: playwright.Float(5000),
+	}); err == nil {
+		classAttr, err := bilingualBtn.GetAttribute("class")
+		if err == nil && !strings.Contains(classAttr, "active") {
+			slog.Info("🔄 Переключаем вид на 'Bilingual'...")
+			if err := bilingualBtn.Click(); err == nil {
+				// Ждем перезагрузки/обновления страницы
+				page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+					State: playwright.LoadStateNetworkidle,
+				})
+				time.Sleep(2 * time.Second) // Даем гриду время отрендериться
+			} else {
+				slog.Warn("⚠️ Ошибка при клике на 'Bilingual'", "error", err)
+			}
+		}
+	}
+
+	// Проверяем выбранный язык
+	langSelect := page.Locator("#single-lang")
+	if count, _ := langSelect.Count(); count > 0 {
+		currentVal, err := langSelect.InputValue()
+		if err == nil && currentVal != config.TargetLangID {
+			slog.Info("🌍 Переключаем язык перевода...", "lang", config.TranslateToLang, "id", config.TargetLangID)
+			_, err = langSelect.SelectOption(playwright.SelectOptionValues{
+				Values: playwright.StringSlice(config.TargetLangID),
+			})
+			if err == nil {
+				// Ждем перезагрузки/обновления страницы
+				page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+					State: playwright.LoadStateNetworkidle,
+				})
+				time.Sleep(2 * time.Second) // Даем гриду время отрендериться
+			} else {
+				slog.Warn("⚠️ Ошибка при выборе языка", "error", err)
+			}
+		}
+	}
+
+	// Пытаемся свернуть боковую панель (если она открыта)
+	collapseBtn := page.Locator("button[aria-label='Collapse panel']")
+	if count, _ := collapseBtn.Count(); count > 0 {
+		if err := collapseBtn.Click(); err == nil {
+			slog.Info("➡️ Свернули боковую панель")
+			time.Sleep(300 * time.Millisecond) // Даем анимации завершиться
+		}
 	}
 
 	filename, err := page.Locator("button[id='1'] strong").InnerText()
@@ -483,7 +559,7 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 
 func mockTranslateWithGemini(tmap []TranslationItem, config Config) ([]TranslationItem, error) {
 	return []TranslationItem{
-		{ID: "798330850", Translation: "mock polish translation"},
+		{ID: "809559539", Translation: "mock polish translation"},
 	}, nil
 }
 
