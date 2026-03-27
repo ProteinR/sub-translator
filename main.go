@@ -548,8 +548,13 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 		time.Sleep(config.ScrollDelay)
 	}
 
-	// Возвращаем курсор в начало
-	_ = page.Mouse().Wheel(0, -totalScrolled)
+	// Возвращаем курсор в начало постепенно
+	steps := int(totalScrolled/800.0) + 5
+	for i := 0; i < steps; i++ {
+		page.Mouse().Wheel(0, -800)
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(1 * time.Second) // Даем отрендериться
 
 	// КРАСИВЫЙ ФИНАЛЬНЫЙ ВЫВОД
 	slog.Info("✅ Сбор данных завершен", "file", filename, "checked", len(seen), "collected", len(results))
@@ -670,12 +675,36 @@ func sanitizeJSON(input string) string {
 
 func fillTranslations(page playwright.Page, items []TranslationItem, config Config) error {
 	slog.Info("✍️ Вставка переводов...")
+
+	// На всякий случай крутанем вверх, чтобы гарантированно быть в начале списка
+	for i := 0; i < 5; i++ {
+		page.Mouse().Wheel(0, -2000)
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(500 * time.Millisecond)
+
 	for _, item := range items {
 		// fmt.Printf("[%d/%d] ID: %s | Вставка...\n", i+1, len(items), item.ID)
 
 		selector := fmt.Sprintf(".row-key[data-id='%s']", item.ID)
 
-		// Скроллим к строке
+		// Пытаемся найти элемент в DOM, если нет - скроллим вниз
+		found := false
+		for k := 0; k < 50; k++ {
+			count, _ := page.Locator(selector).Count()
+			if count > 0 {
+				found = true
+				break
+			}
+			page.Mouse().Wheel(0, 800)
+			time.Sleep(200 * time.Millisecond) // Ждем рендера
+		}
+
+		if !found {
+			return fmt.Errorf("could not find row %s in DOM after scrolling", item.ID)
+		}
+
+		// Скроллим к строке (точно подгоняем во вьюпорт)
 		row := page.Locator(selector)
 		err := row.ScrollIntoViewIfNeeded()
 		if err != nil {
