@@ -247,7 +247,7 @@ func main() {
 
 			if err != nil {
 				slog.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
-				messageText := fmt.Sprintf("❌ Ошибка обработки:\n<a href=\"%s\">%s</a>", projectURL, filename)
+				messageText := fmt.Sprintf("❌ Ошибка обработки:\n<a href=\"%s\">%s</a>\nОшибка: %s", projectURL, filename, err.Error())
 				notifyTelegram(config, tgBot, messageText)
 				return
 			}
