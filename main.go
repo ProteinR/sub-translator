@@ -3,35 +3,99 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	_ "embed"
 
 	"github.com/joho/godotenv"
 	"github.com/playwright-community/playwright-go"
 	"gopkg.in/telebot.v4"
 )
 
+//go:embed index.html
+var indexHTML []byte
+
 // ============================================================
-// 0. ВЕРСИЯ
+// 0. ВЕРСИЯ И СОСТОЯНИЕ
 // ============================================================
-const AppVersion = "1.1.0"
+const AppVersion = "1.2.0-WebUI"
+
+var (
+	appCancel context.CancelFunc
+	isRunning bool
+	runMutex  sync.Mutex
+	broker    *SSEBroker
+)
+
+// ============================================================
+// SSE BROKER ДЛЯ ЛОГОВ
+// ============================================================
+type SSEBroker struct {
+	clients map[chan []byte]bool
+	mu      sync.Mutex
+}
+
+func NewSSEBroker() *SSEBroker {
+	return &SSEBroker{
+		clients: make(map[chan []byte]bool),
+	}
+}
+
+func (b *SSEBroker) AddClient(c chan []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.clients[c] = true
+}
+
+func (b *SSEBroker) RemoveClient(c chan []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.clients, c)
+	close(c)
+}
+
+func (b *SSEBroker) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Очищаем от ANSI escape кодов если нужно, но браузер может их не понимать
+	// Пока отправляем как есть, но уберем \n в конце для SSE
+	msg := bytes.TrimRight(p, "\n")
+
+	for c := range b.clients {
+		select {
+		case c <- msg:
+		default:
+			// Клиент не успевает читать, пропускаем
+		}
+	}
+	return len(p), nil
+}
+
+func (b *SSEBroker) BroadcastControl(msg string) {
+	b.Write([]byte(msg))
+}
 
 // ============================================================
 // 1. КОНФИГУРАЦИЯ
 // ============================================================
 type Config struct {
 	GeminiAPIKey    string
+	GeminiAPIKey2   string
 	InputFile       string
 	AuthStateFile   string
 	MaxConcurrency  int
@@ -50,20 +114,18 @@ type Config struct {
 }
 
 func getScriptConfig() Config {
-	// Загружаем .env файл, если он есть
-	if err := godotenv.Load(); err != nil {
-		slog.Info("Info: .env file not found, using defaults or environment variables")
-	}
+	godotenv.Load() // Пытаемся загрузить актуальный .env
 
 	translateToLangText := getEnv("TRANSLATE_TO", "PL")
 	data, err := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", translateToLangText))
-	if err != nil {
-		slog.Error("Failed to read prompt.txt", "error", err)
-		os.Exit(1)
+	prompt := ""
+	if err == nil {
+		prompt = string(data)
 	}
-	prompt := string(data)
+
 	return Config{
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
+		GeminiAPIKey2:   os.Getenv("GEMINI_API_KEY_2"),
 		InputFile:       getEnv("INPUT_FILE", "projects.txt"),
 		AuthStateFile:   getEnv("AUTH_STATE_FILE", "auth.json"),
 		MaxConcurrency:  getIntEnv("MAX_CONCURRENCY", 1),
@@ -86,7 +148,6 @@ func targetLangIdByText(text string) string {
 	if text == "" || text == "PL" {
 		return "748"
 	}
-
 	return "640"
 }
 
@@ -136,26 +197,23 @@ type GeminiResponse struct {
 
 func setupLogger() *os.File {
 	now := time.Now()
-	// Папка: logs/YYYY-MM-DD
 	dirName := filepath.Join("logs", now.Format("2006-01-02"))
-	if err := os.MkdirAll(dirName, 0755); err != nil {
-		log.Fatalf("Could not create log directory: %v", err)
-	}
+	os.MkdirAll(dirName, 0755)
 
-	// Файл: HH-MM-SS.log
 	fileName := filepath.Join(dirName, fmt.Sprintf("%s.log", now.Format("15-04-05")))
-	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		log.Fatalf("Could not open log file: %v", err)
+	file, _ := os.OpenFile(fileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+
+	broker = NewSSEBroker()
+
+	var multiWriter io.Writer
+	if file != nil {
+		multiWriter = io.MultiWriter(os.Stdout, file, broker)
+	} else {
+		multiWriter = io.MultiWriter(os.Stdout, broker)
 	}
 
-	// Используем io.MultiWriter для записи и в файл, и в консоль
-	multiWriter := io.MultiWriter(os.Stdout, file)
-
-	// Настраиваем slog
 	handler := slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-		// Можно добавить кастомный формат времени, если нужно
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey {
 				a.Value = slog.StringValue(a.Value.Time().Format("15:04:05"))
@@ -164,107 +222,300 @@ func setupLogger() *os.File {
 		},
 	})
 
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-
+	slog.SetDefault(slog.New(handler))
 	return file
 }
 
+// ============================================================
+// HTTP API STRUCTURES
+// ============================================================
+type APIData struct {
+	EnvVars   map[string]string `json:"envVars"`
+	Projects  string            `json:"projects"`
+	Prompt    string            `json:"prompt"`
+	IsRunning bool              `json:"isRunning"`
+	Version   string            `json:"version"`
+}
+
+// ============================================================
+// MAIN HTTP SERVER START
+// ============================================================
 func main() {
-	// Меняем текущую директорию на директорию исполняемого файла
 	exePath, err := os.Executable()
 	if err == nil {
 		exeDir := filepath.Dir(exePath)
-		// Если запускаем через `go run`, исполняемый файл находится во временной папке,
-		// так что менять директорию нужно только если это не `go run`.
-		// Простой способ проверить это — посмотреть на путь:
 		if !strings.Contains(exeDir, "go-build") && !strings.Contains(exeDir, "Temp") && !strings.Contains(exeDir, "tmp") {
 			os.Chdir(exeDir)
 		}
 	}
 
-	// Настройка логгера
 	logFile := setupLogger()
-	defer logFile.Close()
+	if logFile != nil {
+		defer logFile.Close()
+	}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write(indexHTML)
+	})
+
+	http.HandleFunc("/api/data", handleGetData)
+	http.HandleFunc("/api/save", handleSaveData)
+	http.HandleFunc("/api/start", handleStart)
+	http.HandleFunc("/api/stop", handleStop)
+	http.HandleFunc("/api/logs", handleLogs)
+	http.HandleFunc("/api/prompt", handleGetPrompt)
+
+	port := ":8080"
+	slog.Info("🌐 Starting Web UI on http://localhost" + port)
+
+	go openBrowser("http://localhost" + port)
+
+	if err := http.ListenAndServe(port, nil); err != nil {
+		slog.Error("Server failed", "error", err)
+	}
+}
+
+// ============================================================
+// HTTP HANDLERS
+// ============================================================
+func handleGetPrompt(w http.ResponseWriter, r *http.Request) {
+	lang := r.URL.Query().Get("lang")
+	if lang == "" {
+		lang = "PL"
+	}
+	prompt, _ := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", lang))
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write(prompt)
+}
+
+func handleGetData(w http.ResponseWriter, r *http.Request) {
+	envMap, _ := godotenv.Read()
+	if envMap == nil {
+		envMap = make(map[string]string)
+	}
+
+	projects, _ := os.ReadFile("projects.txt")
+	translateTo := envMap["TRANSLATE_TO"]
+	if translateTo == "" {
+		translateTo = "PL"
+	}
+	prompt, _ := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", translateTo))
+
+	runMutex.Lock()
+	rState := isRunning
+	runMutex.Unlock()
+
+	json.NewEncoder(w).Encode(APIData{
+		EnvVars:   envMap,
+		Projects:  string(projects),
+		Prompt:    string(prompt),
+		IsRunning: rState,
+		Version:   AppVersion,
+	})
+}
+
+func handleSaveData(w http.ResponseWriter, r *http.Request) {
+	var req APIData
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// 1. Update .env
+	envMap, _ := godotenv.Read()
+	if envMap == nil {
+		envMap = make(map[string]string)
+	}
+	for k, v := range req.EnvVars {
+		envMap[k] = v
+	}
+	godotenv.Write(envMap, ".env") // Это перезапишет файл (без комментариев), но зато просто
+
+	// 2. Update projects.txt
+	os.WriteFile("projects.txt", []byte(req.Projects), 0644)
+
+	// 3. Update prompt file
+	translateTo := envMap["TRANSLATE_TO"]
+	if translateTo == "" {
+		translateTo = "PL"
+	}
+	os.WriteFile(fmt.Sprintf("prompt_to_%s.txt", translateTo), []byte(req.Prompt), 0644)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleStart(w http.ResponseWriter, r *http.Request) {
+	runMutex.Lock()
+	if isRunning {
+		runMutex.Unlock()
+		http.Error(w, "Already running", http.StatusConflict)
+		return
+	}
+	isRunning = true
+	runMutex.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	appCancel = cancel
+	broker.BroadcastControl("___PROCESS_STARTED___")
+
+	go runTranslation(ctx)
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleStop(w http.ResponseWriter, r *http.Request) {
+	runMutex.Lock()
+	defer runMutex.Unlock()
+	if isRunning && appCancel != nil {
+		appCancel()
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, "Not running", http.StatusConflict)
+	}
+}
+
+func handleLogs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	clientChan := make(chan []byte, 100)
+	broker.AddClient(clientChan)
+	defer broker.RemoveClient(clientChan)
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-clientChan:
+			fmt.Fprintf(w, "data: %s\n\n", msg)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}
+}
+
+func openBrowser(url string) {
+	time.Sleep(1 * time.Second) // Даем серверу подняться
+	var err error
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
+	}
+	if err != nil {
+		slog.Warn("Could not open browser automatically", "error", err)
+	}
+}
+
+// ============================================================
+// MAIN TRANSLATION LOGIC
+// ============================================================
+func runTranslation(ctx context.Context) {
+	defer func() {
+		runMutex.Lock()
+		isRunning = false
+		appCancel = nil
+		runMutex.Unlock()
+		broker.BroadcastControl("___PROCESS_STOPPED___")
+		slog.Info("🏁 Процесс перевода завершен или остановлен.")
+	}()
 
 	slog.Info("🚀 Loka Translator Automation started", "version", AppVersion)
 	config := getScriptConfig()
 
-	// Запуск Playwright
 	pw, err := playwright.Run()
 	if err != nil {
 		slog.Error("could not start playwright", "error", err)
-		os.Exit(1)
+		return
 	}
 	defer pw.Stop()
 
-	// Запуск браузера
 	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
 		Headless: playwright.Bool(false),
 	})
 	if err != nil {
 		slog.Error("could not launch browser", "error", err)
-		os.Exit(1)
+		return
 	}
 	defer browser.Close()
 
-	// 1. Чтение списка проектов
 	projects, err := readProjects(config.InputFile)
 	if err != nil {
 		slog.Error("Could not read projects file", "error", err)
-		os.Exit(1)
+		return
 	}
 	if len(projects) == 0 {
 		slog.Warn("⚠️ Файл с проектами пуст.")
 		return
 	}
 
-	// 2. Проверка авторизации на первом проекте (создает контекст и первую страницу)
-	context, firstPage, err := ensureLogin(browser, config, projects[0])
+	slog.Info("🌐 Открываем первый проект для проверки авторизации...")
+	contextBrowser, firstPage, err := ensureLogin(ctx, browser, config, projects[0])
 	if err != nil {
 		slog.Error("Login failed", "error", err)
-		os.Exit(1)
+		return
 	}
-	defer context.Close()
+	defer contextBrowser.Close()
 
 	slog.Info("📋 Найдено проектов", "count", len(projects), "threads", config.MaxConcurrency)
 
-	// Создаем пул страниц (по одной на каждый поток)
 	pagePool := make(chan playwright.Page, config.MaxConcurrency)
-	pagePool <- firstPage // Кладем первую вкладку, которую уже открыли при логине
+	pagePool <- firstPage
 	for i := 1; i < config.MaxConcurrency; i++ {
-		p, err := context.NewPage()
+		p, err := contextBrowser.NewPage()
 		if err == nil {
 			pagePool <- p
 		}
 	}
 
-	// 3. Запуск воркеров
 	var wg sync.WaitGroup
-	tgBot := newTgBot(config.TgBotToken)
+	var tgBot *telebot.Bot
+	if config.TgBotToken != "" {
+		tgBot = newTgBot(config.TgBotToken)
+	}
 
 	for _, url := range projects {
+		// Проверяем отмену перед каждым проектом
+		select {
+		case <-ctx.Done():
+			slog.Warn("⚠️ Обработка прервана пользователем.")
+			return
+		default:
+		}
+
 		wg.Add(1)
 
-		go func(projectURL string) {
-			defer wg.Done()
+		// Ограничиваем concurrency: горутина ждет страницу из пула
+		page := <-pagePool
 
-			// Захватываем страницу из пула
-			page := <-pagePool
-			// Возвращаем страницу в пул по завершении
-			defer func() { pagePool <- page }()
+		go func(projectURL string, p playwright.Page) {
+			defer wg.Done()
+			defer func() { pagePool <- p }()
 
 			slog.Info("🚀 Старт обработки", "url", projectURL)
-			filename, err := processProject(page, projectURL, config)
+
+			// Передаем ctx внутрь processProject (упрощенно проверяем отмену внутри долгих функций)
+			filename, err := processProject(ctx, p, projectURL, config)
 
 			if err != nil {
+				if err == context.Canceled {
+					slog.Warn("⚠️ Остановлено", "url", projectURL)
+					return
+				}
 				slog.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
 				messageText := fmt.Sprintf("❌ Ошибка обработки:\n<a href=\"%s\">%s</a>\nОшибка: %s", projectURL, filename, err.Error())
 				notifyTelegram(config, tgBot, messageText)
 				return
 			}
 
-			// --- УДАЛЕНИЕ ИЗ ФАЙЛА ПРИ УСПЕХЕ ---
 			if err := removeURLFromFile(config.InputFile, projectURL); err != nil {
 				slog.Warn("⚠️ Ошибка при удалении из файла", "url", projectURL, "error", err)
 			}
@@ -272,20 +523,19 @@ func main() {
 			slog.Info("✅ Завершено", "url", projectURL)
 			messageText := fmt.Sprintf("✅ Завершено:\n<a href=\"%s\">%s</a>", projectURL, filename)
 			notifyTelegram(config, tgBot, messageText)
-		}(url)
+
+		}(url, page)
 	}
 
 	wg.Wait()
-	slog.Info("🏁 Все проекты обработаны!")
 }
 
-var fileMutex sync.Mutex // Глобальный мьютекс для защиты файла
+var fileMutex sync.Mutex
 
 func removeURLFromFile(filePath string, urlToRemove string) error {
-	fileMutex.Lock()         // Блокируем доступ для других потоков
-	defer fileMutex.Unlock() // Разблокируем в конце
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
 
-	// 1. Читаем все текущие строки
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return err
@@ -294,7 +544,6 @@ func removeURLFromFile(filePath string, urlToRemove string) error {
 	lines := strings.Split(string(data), "\n")
 	var newLines []string
 
-	// 2. Формируем новый список строк без удаляемой
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line != "" && line != urlToRemove {
@@ -302,11 +551,13 @@ func removeURLFromFile(filePath string, urlToRemove string) error {
 		}
 	}
 
-	// 3. Записываем обратно (с флагом O_TRUNC, чтобы очистить старое содержимое)
 	return os.WriteFile(filePath, []byte(strings.Join(newLines, "\n")+"\n"), 0644)
 }
 
 func notifyTelegram(config Config, tgBot *telebot.Bot, messageText string) {
+	if tgBot == nil {
+		return
+	}
 	chatIdInt64, err := strconv.ParseInt(config.ChatId, 10, 64)
 	if err != nil {
 		slog.Error("Ошибка конвертации телеграм ChatId", "error", err)
@@ -318,78 +569,85 @@ func notifyTelegram(config Config, tgBot *telebot.Bot, messageText string) {
 		messageText,
 		&telebot.SendOptions{
 			ParseMode:             telebot.ModeHTML,
-			DisableWebPagePreview: true, // Убирает большое окно с превью сайта
+			DisableWebPagePreview: true,
 		},
 	)
 }
 
-// ensureLogin проверяет наличие файла куки. Если нет - просит залогиниться и сохраняет.
-// Возвращает созданный контекст браузера и первую открытую вкладку.
-func ensureLogin(browser playwright.Browser, config Config, checkURL string) (playwright.BrowserContext, playwright.Page, error) {
+func ensureLogin(ctx context.Context, browser playwright.Browser, config Config, checkURL string) (playwright.BrowserContext, playwright.Page, error) {
 	var ctxOpts playwright.BrowserNewContextOptions
 
 	if _, err := os.Stat(config.AuthStateFile); err == nil {
-		slog.Info("🔑 Найден файл авторизации, проверяем валидность...")
+		slog.Info("🔑 Найден файл авторизации, проверяем...")
 		ctxOpts.StorageStatePath = playwright.String(config.AuthStateFile)
-	} else {
-		slog.Warn("⚠️ Файл авторизации не найден. Требуется вход.")
 	}
 
-	context, err := browser.NewContext(ctxOpts)
+	contextBrowser, err := browser.NewContext(ctxOpts)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	page, err := context.NewPage()
+	page, err := contextBrowser.NewPage()
 	if err != nil {
-		context.Close()
+		contextBrowser.Close()
 		return nil, nil, err
 	}
 
-	// Открываем сразу страницу проекта
 	if _, err = page.Goto(checkURL); err != nil {
-		context.Close()
+		contextBrowser.Close()
 		return nil, nil, err
 	}
 
-	// Ждем появления h1 с текстом "Log in" максимум 3 секунды
+	// Ждем появления h1 с текстом "Log in" максимум 5 секунд
 	err = page.Locator("h1", playwright.PageLocatorOptions{
 		HasText: "Log in",
 	}).WaitFor(playwright.LocatorWaitForOptions{
-		Timeout: playwright.Float(3000),
+		Timeout: playwright.Float(5000),
 	})
 
 	if err == nil {
-		// h1 "Log in" найден -> куки устарели (или их не было)
-		if ctxOpts.StorageStatePath != nil {
-			slog.Warn("⚠️ Куки устарели. Удаляем старый файл...")
-			os.Remove(config.AuthStateFile)
-		} else {
-			slog.Warn("⚠️ Требуется вход.")
-		}
+		slog.Warn("⚠️ Требуется вход. Пожалуйста, залогиньтесь в открывшемся окне браузера!")
 
 		err = byId(page, "onetrust-accept-btn-handler").Click()
 		if err != nil {
-			slog.Warn("could not close accept cookies", "error", err)
+			// игнорируем, если нет куков
 		}
 
-		fmt.Println("⌨️  Пожалуйста, залогиньтесь в браузере. После успешного входа нажмите ENTER в этой консоли...")
-		fmt.Scanln()
-
-		// Сохраняем состояние (куки, local storage)
-		if _, err := context.StorageState(config.AuthStateFile); err != nil {
-			return context, page, fmt.Errorf("could not save storage state: %v", err)
+		// Асинхронное ожидание логина: ждем, пока страница с логином исчезнет
+		loggedIn := false
+		for i := 0; i < 180; i++ { // Ожидаем до 3 минут
+			select {
+			case <-ctx.Done():
+				return contextBrowser, page, context.Canceled
+			default:
+				count, _ := page.Locator("h1", playwright.PageLocatorOptions{HasText: "Log in"}).Count()
+				if count == 0 {
+					loggedIn = true
+					break
+				}
+				time.Sleep(1 * time.Second)
+			}
+			if loggedIn {
+				break
+			}
 		}
-		slog.Info("💾 Авторизация сохранена", "file", config.AuthStateFile)
+
+		if !loggedIn {
+			return contextBrowser, page, fmt.Errorf("превышено время ожидания авторизации")
+		}
+
+		// Сохраняем состояние
+		if _, err := contextBrowser.StorageState(config.AuthStateFile); err != nil {
+			return contextBrowser, page, fmt.Errorf("could not save storage state: %v", err)
+		}
+		slog.Info("💾 Авторизация сохранена")
 	} else {
-		// Ошибка по таймауту -> h1 "Log in" не найден -> куки валидны
-		if ctxOpts.StorageStatePath != nil {
-			slog.Info("✅ Куки валидны, мы уже в проекте.")
-		}
+		slog.Info("✅ Куки валидны, вход не требуется.")
 	}
 
-	return context, page, nil
+	return contextBrowser, page, nil
 }
+
 func byId(page playwright.Page, id string) playwright.Locator {
 	selector := fmt.Sprintf("[id='%s']", id)
 	return page.Locator(selector)
@@ -398,6 +656,11 @@ func byId(page playwright.Page, id string) playwright.Locator {
 func readProjects(path string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
+		// Создадим пустой если нет
+		if os.IsNotExist(err) {
+			os.WriteFile(path, []byte(""), 0644)
+			return []string{}, nil
+		}
 		return nil, err
 	}
 	defer file.Close()
@@ -413,12 +676,11 @@ func readProjects(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func processProject(page playwright.Page, projectURL string, config Config) (string, error) {
+func processProject(ctx context.Context, page playwright.Page, projectURL string, config Config) (string, error) {
 	if _, err := page.Goto(projectURL); err != nil {
 		return "", fmt.Errorf("could not goto url: %v", err)
 	}
 
-	// Проверяем, включен ли режим "Bilingual"
 	bilingualBtn := page.Locator(".single-view-btn")
 	if err := bilingualBtn.WaitFor(playwright.LocatorWaitForOptions{
 		Timeout: playwright.Float(5000),
@@ -427,44 +689,35 @@ func processProject(page playwright.Page, projectURL string, config Config) (str
 		if err == nil && !strings.Contains(classAttr, "active") {
 			slog.Info("🔄 Переключаем вид на 'Bilingual'...")
 			if err := bilingualBtn.Click(); err == nil {
-				// Ждем перезагрузки/обновления страницы
 				page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 					State: playwright.LoadStateNetworkidle,
 				})
-				time.Sleep(2 * time.Second) // Даем гриду время отрендериться
-			} else {
-				slog.Warn("⚠️ Ошибка при клике на 'Bilingual'", "error", err)
+				time.Sleep(2 * time.Second)
 			}
 		}
 	}
 
-	// Проверяем выбранный язык
 	langSelect := page.Locator("#single-lang")
 	if count, _ := langSelect.Count(); count > 0 {
 		currentVal, err := langSelect.InputValue()
 		if err == nil && currentVal != config.TargetLangID {
-			slog.Info("🌍 Переключаем язык перевода...", "lang", config.TranslateToLang, "id", config.TargetLangID)
+			slog.Info("🌍 Переключаем язык перевода...", "id", config.TargetLangID)
 			_, err = langSelect.SelectOption(playwright.SelectOptionValues{
 				Values: playwright.StringSlice(config.TargetLangID),
 			})
 			if err == nil {
-				// Ждем перезагрузки/обновления страницы
 				page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 					State: playwright.LoadStateNetworkidle,
 				})
-				time.Sleep(2 * time.Second) // Даем гриду время отрендериться
-			} else {
-				slog.Warn("⚠️ Ошибка при выборе языка", "error", err)
+				time.Sleep(2 * time.Second)
 			}
 		}
 	}
 
-	// Пытаемся свернуть боковую панель (если она открыта)
 	collapseBtn := page.Locator("button[aria-label='Collapse panel']")
 	if count, _ := collapseBtn.Count(); count > 0 {
 		if err := collapseBtn.Click(); err == nil {
-			slog.Info("➡️ Свернули боковую панель")
-			time.Sleep(300 * time.Millisecond) // Даем анимации завершиться
+			time.Sleep(300 * time.Millisecond)
 		}
 	}
 
@@ -472,13 +725,11 @@ func processProject(page playwright.Page, projectURL string, config Config) (str
 	if err != nil {
 		return "", fmt.Errorf("could not get filename: %v", err)
 	}
-	// Очистка имени файла от неразрывных пробелов и лишних символов
 	filename = strings.TrimSpace(strings.ReplaceAll(filename, "\u00a0", " "))
 	filename = strings.TrimPrefix(filename, "Filename: ")
 	filename = strings.TrimSpace(filename)
 
-	// 1. Сбор пустых строк
-	translationMap, err := scrollAndCollect(page, config, filename)
+	translationMap, err := scrollAndCollect(ctx, page, config, filename)
 	if err != nil {
 		return filename, fmt.Errorf("scroll error: %v", err)
 	}
@@ -487,20 +738,17 @@ func processProject(page playwright.Page, projectURL string, config Config) (str
 		return filename, nil
 	}
 
-	// 2. Перевод через Gemini
 	translatedItems, err := translateWithGemini(translationMap, config)
-	//translatedItems, err := mockTranslateWithGemini(translationMap, config)
 	if err != nil {
 		return filename, fmt.Errorf("gemini error: %v", err)
 	}
 
-	// 3. Вставка переводов
-	err = fillTranslations(page, translatedItems, config)
+	err = fillTranslations(ctx, page, translatedItems, config)
 
 	return filename, err
 }
 
-func scrollAndCollect(page playwright.Page, config Config, filename string) ([]TranslationItem, error) {
+func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, filename string) ([]TranslationItem, error) {
 	var results []TranslationItem
 	seen := make(map[string]bool)
 
@@ -511,9 +759,13 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 	slog.Info("🔍 Начинаю поиск пустых строк", "file", filename)
 
 	for noNewElementsCount < maxNoNewRetries {
-		newAddedThisStep := 0
-		foundEmptyInThisStep := 0
+		select {
+		case <-ctx.Done():
+			return nil, context.Canceled
+		default:
+		}
 
+		newAddedThisStep := 0
 		rows, err := page.Locator(".row-key[data-id]").All()
 		if err != nil {
 			break
@@ -524,12 +776,9 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 			if id == "" || seen[id] {
 				continue
 			}
-
-			// Помечаем как увиденный
 			seen[id] = true
 			newAddedThisStep++
 
-			// Проверка на пустоту
 			targetCell := row.Locator(fmt.Sprintf(".cell-trans[data-lang-id='%s']", config.TargetLangID))
 			isEmpty, _ := targetCell.Locator(".empty").Count()
 			cellText, _ := targetCell.InnerText()
@@ -544,7 +793,6 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 					ID:       id,
 					Original: strings.TrimSpace(originalText),
 				})
-				foundEmptyInThisStep++
 			}
 		}
 
@@ -560,42 +808,27 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 		time.Sleep(config.ScrollDelay)
 	}
 
-	// Возвращаем курсор в начало постепенно
 	steps := int(totalScrolled/800.0) + 5
 	for i := 0; i < steps; i++ {
 		page.Mouse().Wheel(0, -800)
 		time.Sleep(50 * time.Millisecond)
 	}
-	time.Sleep(1 * time.Second) // Даем отрендериться
+	time.Sleep(1 * time.Second)
 
-	// КРАСИВЫЙ ФИНАЛЬНЫЙ ВЫВОД
 	slog.Info("✅ Сбор данных завершен", "file", filename, "checked", len(seen), "collected", len(results))
-
 	return results, nil
-}
-
-func mockTranslateWithGemini(tmap []TranslationItem, config Config) ([]TranslationItem, error) {
-	return []TranslationItem{
-		{ID: "809559539", Translation: "mock polish translation"},
-	}, nil
 }
 
 func translateWithGemini(tmap []TranslationItem, config Config) ([]TranslationItem, error) {
 	slog.Info("⏳ Запрос к Gemini...")
 
-	var payloadItems []TranslationItem
-	for _, v := range tmap {
-		payloadItems = append(payloadItems, v)
-	}
-
-	// ВАШ ОРИГИНАЛЬНЫЙ ПРОМПТ
 	prompt := fmt.Sprintf(`%s
 
 IMPORTANT: Respond ONLY with a valid JSON object. 
 Do NOT repeat the translation twice in the output string.
 Structure: {"results": [{"id": "ID_HERE", "translation": "TRANSLATED_TEXT_HERE"}, ...]}
 
-Data to translate: %s`, config.Prompt, func() string { b, _ := json.Marshal(payloadItems); return string(b) }())
+Data to translate: %s`, config.Prompt, func() string { b, _ := json.Marshal(tmap); return string(b) }())
 
 	geminiReq := GeminiPayload{}
 	geminiReq.Contents = append(geminiReq.Contents, struct {
@@ -608,20 +841,40 @@ Data to translate: %s`, config.Prompt, func() string { b, _ := json.Marshal(payl
 	}{Text: prompt})
 
 	jsonPayload, _ := json.Marshal(geminiReq)
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1/models/%s:generateContent?key=%s", config.Model, config.GeminiAPIKey)
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return nil, err
+	doCall := func(key string) ([]byte, error) {
+		url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1/models/%s:generateContent?key=%s", config.Model, key)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		}
+
+		return body, nil
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := doCall(config.GeminiAPIKey)
+	if err != nil {
+		if config.GeminiAPIKey2 != "" {
+			slog.Warn("⚠️ Ошибка с основным API ключом, пробуем запасной...", "error", err)
+			body, err = doCall(config.GeminiAPIKey2)
+			if err != nil {
+				return nil, fmt.Errorf("оба ключа вернули ошибку: %v", err)
+			}
+		} else {
+			return nil, err
+		}
+	}
 
-	// --- ВЫВОД RAW ОТВЕТА В КОНСОЛЬ ---
-	// fmt.Printf("\n[RAW LLM RESPONSE]:\n%s\n\n", string(body))
-
-	// Извлекаем JSON из ответа (убираем возможные Markdown обертки)
 	respStr := string(body)
 	start := strings.Index(respStr, "{")
 	end := strings.LastIndex(respStr, "}")
@@ -629,66 +882,48 @@ Data to translate: %s`, config.Prompt, func() string { b, _ := json.Marshal(payl
 		return nil, fmt.Errorf("invalid response format")
 	}
 
-	// Парсим структуру Gemini Candidate
 	var rawMap map[string]interface{}
 	json.Unmarshal(body, &rawMap)
 
-	// В Go структура Gemini вложена: candidates[0].content.parts[0].text
-	// Для простоты примера вытащим текст через простое сопоставление или доп. структуру
 	candidates, ok := rawMap["candidates"].([]interface{})
 	if !ok || len(candidates) == 0 {
-		return nil, fmt.Errorf("no candidates in response: %s", string(body))
+		return nil, fmt.Errorf("no candidates in response")
 	}
 	candidate := candidates[0].(map[string]interface{})
 	content := candidate["content"].(map[string]interface{})
 	parts := content["parts"].([]interface{})
 	actualJSON := parts[0].(map[string]interface{})["text"].(string)
 
-	// Применяем очистку
 	cleanJSON := sanitizeJSON(actualJSON)
 
 	var finalResp GeminiResponse
 	err = json.Unmarshal([]byte(cleanJSON), &finalResp)
 	if err != nil {
-		// Выводим текст, который не удалось распарсить, для удобства дебага
-		return nil, fmt.Errorf("Не удалось распарсить ответ от gemini: %w \nТекст после очистки: %s", err, cleanJSON)
+		return nil, fmt.Errorf("parse err: %w \nClean text: %s", err, cleanJSON)
 	}
 
 	return finalResp.Results, nil
 }
 
 func sanitizeJSON(input string) string {
-	// Убираем пробелы и переносы строк в начале и конце
 	input = strings.TrimSpace(input)
-
-	// Если ответ обернут в блоки кода Markdown
 	if strings.HasPrefix(input, "```") {
-		// Убираем открывающий блок (поддерживаем ```json и просто ```)
 		input = strings.TrimPrefix(input, "```json")
 		input = strings.TrimPrefix(input, "```")
-
-		// Убираем закрывающий блок
 		input = strings.TrimSuffix(input, "```")
-
-		// Повторно чистим пробелы
 		input = strings.TrimSpace(input)
 	}
-
-	// На всякий случай: если перед JSON есть какой-то текст,
-	// находим первое вхождение { и последнее }
 	start := strings.Index(input, "{")
 	end := strings.LastIndex(input, "}")
 	if start != -1 && end != -1 && end > start {
 		input = input[start : end+1]
 	}
-
 	return input
 }
 
-func fillTranslations(page playwright.Page, items []TranslationItem, config Config) error {
+func fillTranslations(ctx context.Context, page playwright.Page, items []TranslationItem, config Config) error {
 	slog.Info("✍️ Вставка переводов...")
 
-	// На всякий случай крутанем вверх, чтобы гарантированно быть в начале списка
 	for i := 0; i < 5; i++ {
 		page.Mouse().Wheel(0, -2000)
 		time.Sleep(50 * time.Millisecond)
@@ -696,11 +931,13 @@ func fillTranslations(page playwright.Page, items []TranslationItem, config Conf
 	time.Sleep(500 * time.Millisecond)
 
 	for _, item := range items {
-		// fmt.Printf("[%d/%d] ID: %s | Вставка...\n", i+1, len(items), item.ID)
+		select {
+		case <-ctx.Done():
+			return context.Canceled
+		default:
+		}
 
 		selector := fmt.Sprintf(".row-key[data-id='%s']", item.ID)
-
-		// Пытаемся найти элемент в DOM, если нет - скроллим вниз
 		found := false
 		for k := 0; k < 50; k++ {
 			count, _ := page.Locator(selector).Count()
@@ -709,14 +946,13 @@ func fillTranslations(page playwright.Page, items []TranslationItem, config Conf
 				break
 			}
 			page.Mouse().Wheel(0, 800)
-			time.Sleep(200 * time.Millisecond) // Ждем рендера
+			time.Sleep(200 * time.Millisecond)
 		}
 
 		if !found {
 			return fmt.Errorf("could not find row %s in DOM after scrolling", item.ID)
 		}
 
-		// Скроллим к строке (точно подгоняем во вьюпорт)
 		row := page.Locator(selector)
 		err := row.ScrollIntoViewIfNeeded()
 		if err != nil {
@@ -736,7 +972,6 @@ func fillTranslations(page playwright.Page, items []TranslationItem, config Conf
 
 		time.Sleep(config.BeforeSaveDelay)
 
-		// Пытаемся нажать кнопку Save
 		saveBtn := page.Locator("button.save.btn-primary")
 		err = saveBtn.Click()
 		if err != nil {
@@ -744,7 +979,6 @@ func fillTranslations(page playwright.Page, items []TranslationItem, config Conf
 		}
 
 		editorSelector := ".ace_text-input, textarea:not([style*='display: none']), [contenteditable='true']"
-		// Ждем закрытия редактора
 		for j := 0; j < 10; j++ {
 			if visible, _ := page.IsVisible(editorSelector); !visible {
 				break
@@ -764,7 +998,7 @@ func newTgBot(token string) *telebot.Bot {
 	botSdk, err := telebot.NewBot(pref)
 	if err != nil {
 		slog.Error("Ошибка создания бота", "error", err)
-		panic(err)
+		return nil
 	}
 	return botSdk
 }
