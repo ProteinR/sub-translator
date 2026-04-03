@@ -65,16 +65,16 @@
                 <div class="space-y-2">
                     <div>
                         <label class="block text-xs font-medium text-gray-500">GEMINI_API_KEY (Primary)</label>
-                        <input type="text" id="env_GEMINI_API_KEY" class="w-full border rounded p-1.5 text-sm" placeholder="AIzaSy...">
+                        <input type="text" id="cfg_geminiApiKey" class="w-full border rounded p-1.5 text-sm" placeholder="AIzaSy...">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">GEMINI_API_KEY_2 (Backup)</label>
-                        <input type="text" id="env_GEMINI_API_KEY_2" class="w-full border rounded p-1.5 text-sm" placeholder="Optional backup key">
+                        <input type="text" id="cfg_geminiApiKey2" class="w-full border rounded p-1.5 text-sm" placeholder="Optional backup key">
                     </div>
                     <div class="flex gap-2">
                         <div class="flex-1">
                             <label class="block text-xs font-medium text-gray-500">MODEL</label>
-                            <input type="text" id="env_MODEL" class="w-full border rounded p-1.5 text-sm" placeholder="gemini-2.5-flash">
+                            <input type="text" id="cfg_model" class="w-full border rounded p-1.5 text-sm" placeholder="gemini-2.5-flash">
                         </div>
                         <div class="flex-1">
                             <label class="block text-xs font-medium text-gray-500 mb-1">TRANSLATION DIR</label>
@@ -90,7 +90,7 @@
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">MAX_CONCURRENCY</label>
-                        <input type="number" id="env_MAX_CONCURRENCY" class="w-full border rounded p-1.5 text-sm" placeholder="1">
+                        <input type="number" id="cfg_maxConcurrency" class="w-full border rounded p-1.5 text-sm" placeholder="1">
                     </div>
                 </div>
             </div>
@@ -100,19 +100,19 @@
                 <div class="grid grid-cols-2 gap-2">
                     <div>
                         <label class="block text-xs font-medium text-gray-500">SCROLL</label>
-                        <input type="number" id="env_SCROLL_DELAY_MS" class="w-full border rounded p-1.5 text-sm">
+                        <input type="number" id="cfg_scrollDelay" class="w-full border rounded p-1.5 text-sm">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">EDITOR_LOAD</label>
-                        <input type="number" id="env_EDITOR_LOAD_DELAY_MS" class="w-full border rounded p-1.5 text-sm">
+                        <input type="number" id="cfg_editorLoadDelay" class="w-full border rounded p-1.5 text-sm">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">BEFORE_SAVE</label>
-                        <input type="number" id="env_BEFORE_SAVE_DELAY_MS" class="w-full border rounded p-1.5 text-sm">
+                        <input type="number" id="cfg_beforeSaveDelay" class="w-full border rounded p-1.5 text-sm">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">ROW_NEXT</label>
-                        <input type="number" id="env_ROW_NEXT_DELAY_MS" class="w-full border rounded p-1.5 text-sm">
+                        <input type="number" id="cfg_rowNextDelay" class="w-full border rounded p-1.5 text-sm">
                     </div>
                 </div>
             </div>
@@ -122,11 +122,11 @@
                 <div class="space-y-2">
                     <div>
                         <label class="block text-xs font-medium text-gray-500">TG_BOT_TOKEN</label>
-                        <input type="password" id="env_TG_BOT_TOKEN" class="w-full border rounded p-1.5 text-sm">
+                        <input type="password" id="cfg_tgBotToken" class="w-full border rounded p-1.5 text-sm">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">CHAT_ID</label>
-                        <input type="text" id="env_CHAT_ID" class="w-full border rounded p-1.5 text-sm">
+                        <input type="text" id="cfg_chatId" class="w-full border rounded p-1.5 text-sm">
                     </div>
                 </div>
             </div>
@@ -168,7 +168,7 @@
 
     <script>
         const DOM = {
-            envInputs: document.querySelectorAll('input[id^="env_"]'),
+            cfgInputs: document.querySelectorAll('input[id^="cfg_"]'),
             projectsContainer: document.getElementById('projects-container'),
             projectsCount: document.getElementById('projects-count'),
             prompt: document.getElementById('prompt'),
@@ -273,29 +273,30 @@
                 const res = await fetch('/api/data');
                 const data = await res.json();
                 
-                // Populate ENV
-                if(data.envVars) {
-                    DOM.envInputs.forEach(input => {
-                        const key = input.id.replace('env_', '');
-                        if(data.envVars[key] !== undefined) {
-                            input.value = data.envVars[key];
+                if(data.config) {
+                    DOM.cfgInputs.forEach(input => {
+                        const key = input.id.replace('cfg_', '');
+                        if(data.config[key] !== undefined) {
+                            input.value = data.config[key];
                         }
                     });
 
-                    if(data.envVars['TRANSLATE_TO']) {
+                    if(data.config.translateTo) {
                         DOM.translateToRadios.forEach(r => {
-                            r.checked = (r.value === data.envVars['TRANSLATE_TO']);
+                            r.checked = (r.value === data.config.translateTo);
                         });
+                        window.currentLang = data.config.translateTo;
                     }
+                    
+                    window.currentPrompts = data.config.prompts || {};
+                    DOM.prompt.value = window.currentPrompts[data.config.translateTo] || '';
+                    
+                    renderProjects((data.config.projects || []).join('\n'));
                 }
                 
                 if(data.version) {
                     DOM.appVersion.textContent = `v${data.version}`;
                 }
-                
-                DOM.prompt.value = data.prompt || '';
-                
-                renderProjects(data.projects || '');
                 
                 updatePromptLabel();
                 updateUIState(data.isRunning);
@@ -308,23 +309,25 @@
         }
 
         async function saveData() {
-            const envVars = {};
-            DOM.envInputs.forEach(input => {
-                const key = input.id.replace('env_', '');
-                envVars[key] = input.value;
+            const config = {};
+            DOM.cfgInputs.forEach(input => {
+                const key = input.id.replace('cfg_', '');
+                if (input.type === 'number') {
+                    config[key] = parseInt(input.value, 10) || 0;
+                } else {
+                    config[key] = input.value;
+                }
             });
 
             DOM.translateToRadios.forEach(r => {
-                if(r.checked) envVars['TRANSLATE_TO'] = r.value;
+                if(r.checked) config.translateTo = r.value;
             });
 
-            const projectsStr = getProjectList().join('\n');
+            config.projects = getProjectList();
+            config.prompts = window.currentPrompts || {};
+            config.prompts[config.translateTo] = DOM.prompt.value;
 
-            const payload = {
-                envVars,
-                projects: projectsStr,
-                prompt: DOM.prompt.value
-            };
+            const payload = { config };
 
             try {
                 const res = await fetch('/api/save', {
@@ -424,9 +427,14 @@
         }
 
         async function fetchPromptForLang(lang) {
+            if (window.currentPrompts && window.currentPrompts[lang]) {
+                DOM.prompt.value = window.currentPrompts[lang];
+                return;
+            }
             try {
                 const res = await fetch(`/api/prompt?lang=${lang}`);
                 const promptText = await res.text();
+                if (window.currentPrompts) window.currentPrompts[lang] = promptText;
                 DOM.prompt.value = promptText;
             } catch(e) {
                 console.error("Failed to fetch prompt", e);
@@ -437,7 +445,13 @@
         function handleLangChange() {
             updatePromptLabel();
             let lang = 'PL';
+            let oldLang = window.currentLang;
             DOM.translateToRadios.forEach(r => { if(r.checked) lang = r.value; });
+            
+            if (oldLang && window.currentPrompts) {
+                window.currentPrompts[oldLang] = DOM.prompt.value;
+            }
+            window.currentLang = lang;
             fetchPromptForLang(lang);
         }
 

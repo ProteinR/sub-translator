@@ -53,37 +53,20 @@ fi
 # 2. Сборка проекта (если нужно)
 if [ "$NEEDS_BUILD" = true ]; then
     echo -e "${BLUE}[2/3] Обновляем зависимости и собираем проект...${NC}"
+    cd src
     go mod tidy > /dev/null 2>&1
-    go build -o translator-web main.go
+    go build -o ../translator-web main.go
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Ошибка компиляции проекта. Запуск невозможен.${NC}"
         exit 1
     fi
+    cd ..
     echo -e "${GREEN}✅ Проект успешно скомпилирован!${NC}"
 else
     echo -e "${BLUE}[2/3] Сборка не требуется.${NC}"
 fi
 
-# 3. Подготовка конфигурации
-echo -e "${BLUE}[3/4] Проверка файлов конфигурации...${NC}"
-# Копируем .env если его нет
-if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}Файл .env не найден. Копирую из .env-example...${NC}"
-    cp .env-example .env
-fi
-
-# Копируем промпты если их нет
-if [ ! -f "prompt_to_PL.txt" ] && [ -f "prompt_to_pl_example.txt" ]; then
-    echo -e "${YELLOW}Создаю prompt_to_PL.txt из примера...${NC}"
-    cp prompt_to_pl_example.txt prompt_to_PL.txt
-fi
-
-if [ ! -f "prompt_to_EN.txt" ] && [ -f "prompt_to_en_example.txt" ]; then
-    echo -e "${YELLOW}Создаю prompt_to_EN.txt из примера...${NC}"
-    cp prompt_to_en_example.txt prompt_to_EN.txt
-fi
-
-# 4. Запуск приложения
-echo -e "${BLUE}[4/4] Запускаем Loka Translator...${NC}"
+# 3. Запуск приложения
+echo -e "${BLUE}[3/3] Запускаем Loka Translator...${NC}"
 echo -e "${GREEN}==========================================${NC}"
 ./translator-web

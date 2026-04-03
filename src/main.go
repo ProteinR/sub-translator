@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -21,7 +20,6 @@ import (
 
 	_ "embed"
 
-	"github.com/joho/godotenv"
 	"github.com/playwright-community/playwright-go"
 	"gopkg.in/telebot.v4"
 )
@@ -96,8 +94,6 @@ func (b *SSEBroker) BroadcastControl(msg string) {
 type Config struct {
 	GeminiAPIKey    string
 	GeminiAPIKey2   string
-	InputFile       string
-	AuthStateFile   string
 	MaxConcurrency  int
 	TargetLangID    string
 	TranslateToLang string
@@ -111,36 +107,63 @@ type Config struct {
 	FocusDelay      time.Duration
 	BeforeSaveDelay time.Duration
 	RowNextDelay    time.Duration
+	Projects        []string
 }
 
-func getScriptConfig() Config {
-	godotenv.Load() // Пытаемся загрузить актуальный .env
-
-	translateToLangText := getEnv("TRANSLATE_TO", "PL")
-	data, err := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", translateToLangText))
-	prompt := ""
-	if err == nil {
-		prompt = string(data)
+func loadConfig() FileConfig {
+	path := filepath.Join("data", "config.json")
+	data, err := os.ReadFile(path)
+	cfg := FileConfig{
+		TranslateTo:     "PL",
+		Model:           "gemini-2.5-flash",
+		MaxConcurrency:  1,
+		ScrollDelay:     2000,
+		EditorLoadDelay: 1500,
+		FocusDelay:      300,
+		BeforeSaveDelay: 800,
+		RowNextDelay:    600,
+		Projects:        []string{},
+		Prompts:         map[string]string{},
 	}
+	if err == nil {
+		json.Unmarshal(data, &cfg)
+	}
+	if cfg.Prompts == nil {
+		cfg.Prompts = map[string]string{}
+	}
+	if cfg.Prompts["PL"] == "" {
+		cfg.Prompts["PL"] = getDefaultPrompt("PL")
+	}
+	if cfg.Prompts["EN"] == "" {
+		cfg.Prompts["EN"] = getDefaultPrompt("EN")
+	}
+	return cfg
+}
 
+func saveConfig(cfg FileConfig) {
+	path := filepath.Join("data", "config.json")
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile(path, data, 0644)
+}
+
+func toInternalConfig(fc FileConfig) Config {
 	return Config{
-		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
-		GeminiAPIKey2:   os.Getenv("GEMINI_API_KEY_2"),
-		InputFile:       getEnv("INPUT_FILE", "projects.txt"),
-		AuthStateFile:   getEnv("AUTH_STATE_FILE", "auth.json"),
-		MaxConcurrency:  getIntEnv("MAX_CONCURRENCY", 1),
-		TargetLangID:    targetLangIdByText(translateToLangText),
-		TranslateToLang: translateToLangText,
-		Model:           getEnv("MODEL", "gemini-2.5-flash"),
-		Prompt:          prompt,
-		ScrollDelay:     getDurationEnv("SCROLL_DELAY_MS", 2000),
-		EditorLoadDelay: getDurationEnv("EDITOR_LOAD_DELAY_MS", 1500),
-		FocusDelay:      getDurationEnv("FOCUS_DELAY_MS", 300),
-		BeforeSaveDelay: getDurationEnv("BEFORE_SAVE_DELAY_MS", 800),
-		RowNextDelay:    getDurationEnv("ROW_NEXT_DELAY_MS", 600),
-		TgBotToken:      getEnv("TG_BOT_TOKEN", ""),
-		ChatId:          getEnv("CHAT_ID", ""),
-		BaseURL:         getEnv("BASE_URL", "https://app.lokalise.com"),
+		GeminiAPIKey:    fc.GeminiAPIKey,
+		GeminiAPIKey2:   fc.GeminiAPIKey2,
+		MaxConcurrency:  fc.MaxConcurrency,
+		TargetLangID:    targetLangIdByText(fc.TranslateTo),
+		TranslateToLang: fc.TranslateTo,
+		Model:           fc.Model,
+		Prompt:          fc.Prompts[fc.TranslateTo],
+		TgBotToken:      fc.TgBotToken,
+		ChatId:          fc.ChatId,
+		BaseURL:         fc.BaseURL,
+		ScrollDelay:     time.Duration(fc.ScrollDelay) * time.Millisecond,
+		EditorLoadDelay: time.Duration(fc.EditorLoadDelay) * time.Millisecond,
+		FocusDelay:      time.Duration(fc.FocusDelay) * time.Millisecond,
+		BeforeSaveDelay: time.Duration(fc.BeforeSaveDelay) * time.Millisecond,
+		RowNextDelay:    time.Duration(fc.RowNextDelay) * time.Millisecond,
+		Projects:        fc.Projects,
 	}
 }
 
@@ -149,31 +172,6 @@ func targetLangIdByText(text string) string {
 		return "748"
 	}
 	return "640"
-}
-
-func getEnv(key, fallback string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return fallback
-}
-
-func getIntEnv(key string, fallback int) int {
-	if value, exists := os.LookupEnv(key); exists {
-		if i, err := strconv.Atoi(value); err == nil {
-			return i
-		}
-	}
-	return fallback
-}
-
-func getDurationEnv(key string, fallbackMs int) time.Duration {
-	if value, exists := os.LookupEnv(key); exists {
-		if ms, err := strconv.Atoi(value); err == nil {
-			return time.Duration(ms) * time.Millisecond
-		}
-	}
-	return time.Duration(fallbackMs) * time.Millisecond
 }
 
 // Структуры для Gemini API
@@ -197,7 +195,7 @@ type GeminiResponse struct {
 
 func setupLogger() *os.File {
 	now := time.Now()
-	dirName := filepath.Join("logs", now.Format("2006-01-02"))
+	dirName := filepath.Join("data", "logs", now.Format("2006-01-02"))
 	os.MkdirAll(dirName, 0755)
 
 	fileName := filepath.Join(dirName, fmt.Sprintf("%s.log", now.Format("15-04-05")))
@@ -229,12 +227,57 @@ func setupLogger() *os.File {
 // ============================================================
 // HTTP API STRUCTURES
 // ============================================================
+func getDefaultPrompt(lang string) string {
+	if lang == "EN" {
+		return `Role: Act as a professional translator and English localization expert. Your task is to translate video scripts from Polish to English.
+
+Context: This content covers business/personal development coaching, meditations, sports lessons, and psychology podcasts.
+
+Style & Tone: * Use natural, "living" English.
+Prioritize flow and conversational rhythm.
+Avoid "Slavicisms" (e.g., wordy constructions like "the fact that", "which is", or excessive passive voice).
+
+Grammar & Localization Rules:
+Strict Gender Agreement: Research the speaker's name or context to determine if they are male or female.
+Binary Pronouns: Use "he/him" for men and "she/her" for women. Do not use gender-neutral "they" unless the source text specifically implies a group or an unspecified person.
+Participles & Sentence Structure: Be careful with Polish adverbial participles (imiesłów) like "robiąc" or "zostawiając". Translate them into clear English structures (e.g., "While doing..." or by using a new clause) to avoid "dangling modifiers." Every sentence must have a clear subject and a finite verb.
+Punctuation: Remove periods from titles and headings, following standard English formatting rules.
+Direct Address: In coaching and sports lessons, ensure the "You" (Ty/Pan/Pani) sounds motivating and direct, matching the energy of an English-speaking coach.`
+	}
+
+	return `Role: Act as a professional translator and Polish localization expert. Your task is to translate video scripts from English to Polish.
+
+Context: This is business/personal development coaching, meditations, sports lessons, psychology podcasts.
+Style: Natural "living" language. Focus on flow.
+Be aware of this rule in polish grammar: W tym zdaniu jest imiesłów przysłówkowy pozostawiając, ale nie ma czasownika w funkcji orzeczenia. Możliwe, że to tytuł, ale w takim razie zbędna jest kropka.
+Check the name of the speaker and make a research: if it's a man or a woman.
+Grammar: If the speaker is a woman:
+  1. Use feminine verb forms (e.g., "zrobiłam", "powiedziałam").
+  2. Use feminatives (e.g., "trenerka", "ekspertka"), where needed.`
+}
+
+type FileConfig struct {
+	GeminiAPIKey    string            `json:"geminiApiKey"`
+	GeminiAPIKey2   string            `json:"geminiApiKey2"`
+	MaxConcurrency  int               `json:"maxConcurrency"`
+	TranslateTo     string            `json:"translateTo"`
+	Model           string            `json:"model"`
+	TgBotToken      string            `json:"tgBotToken"`
+	ChatId          string            `json:"chatId"`
+	BaseURL         string            `json:"baseUrl"`
+	ScrollDelay     int               `json:"scrollDelay"`
+	EditorLoadDelay int               `json:"editorLoadDelay"`
+	FocusDelay      int               `json:"focusDelay"`
+	BeforeSaveDelay int               `json:"beforeSaveDelay"`
+	RowNextDelay    int               `json:"rowNextDelay"`
+	Projects        []string          `json:"projects"`
+	Prompts         map[string]string `json:"prompts"`
+}
+
 type APIData struct {
-	EnvVars   map[string]string `json:"envVars"`
-	Projects  string            `json:"projects"`
-	Prompt    string            `json:"prompt"`
-	IsRunning bool              `json:"isRunning"`
-	Version   string            `json:"version"`
+	Config    FileConfig `json:"config"`
+	IsRunning bool       `json:"isRunning"`
+	Version   string     `json:"version"`
 }
 
 // ============================================================
@@ -248,6 +291,8 @@ func main() {
 			os.Chdir(exeDir)
 		}
 	}
+
+	os.MkdirAll("data", 0755)
 
 	logFile := setupLogger()
 	if logFile != nil {
@@ -284,32 +329,24 @@ func handleGetPrompt(w http.ResponseWriter, r *http.Request) {
 	if lang == "" {
 		lang = "PL"
 	}
-	prompt, _ := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", lang))
+	cfg := loadConfig()
+	prompt, ok := cfg.Prompts[lang]
+	if !ok || prompt == "" {
+		prompt = getDefaultPrompt(lang)
+	}
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write(prompt)
+	w.Write([]byte(prompt))
 }
 
 func handleGetData(w http.ResponseWriter, r *http.Request) {
-	envMap, _ := godotenv.Read()
-	if envMap == nil {
-		envMap = make(map[string]string)
-	}
-
-	projects, _ := os.ReadFile("projects.txt")
-	translateTo := envMap["TRANSLATE_TO"]
-	if translateTo == "" {
-		translateTo = "PL"
-	}
-	prompt, _ := os.ReadFile(fmt.Sprintf("prompt_to_%s.txt", translateTo))
+	cfg := loadConfig()
 
 	runMutex.Lock()
 	rState := isRunning
 	runMutex.Unlock()
 
 	json.NewEncoder(w).Encode(APIData{
-		EnvVars:   envMap,
-		Projects:  string(projects),
-		Prompt:    string(prompt),
+		Config:    cfg,
 		IsRunning: rState,
 		Version:   AppVersion,
 	})
@@ -322,26 +359,7 @@ func handleSaveData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Update .env
-	envMap, _ := godotenv.Read()
-	if envMap == nil {
-		envMap = make(map[string]string)
-	}
-	for k, v := range req.EnvVars {
-		envMap[k] = v
-	}
-	godotenv.Write(envMap, ".env") // Это перезапишет файл (без комментариев), но зато просто
-
-	// 2. Update projects.txt
-	os.WriteFile("projects.txt", []byte(req.Projects), 0644)
-
-	// 3. Update prompt file
-	translateTo := envMap["TRANSLATE_TO"]
-	if translateTo == "" {
-		translateTo = "PL"
-	}
-	os.WriteFile(fmt.Sprintf("prompt_to_%s.txt", translateTo), []byte(req.Prompt), 0644)
-
+	saveConfig(req.Config)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -429,7 +447,8 @@ func runTranslation(ctx context.Context) {
 	}()
 
 	slog.Info("🚀 Loka Translator Automation started", "version", AppVersion)
-	config := getScriptConfig()
+	fileCfg := loadConfig()
+	config := toInternalConfig(fileCfg)
 
 	pw, err := playwright.Run()
 	if err != nil {
@@ -447,13 +466,9 @@ func runTranslation(ctx context.Context) {
 	}
 	defer browser.Close()
 
-	projects, err := readProjects(config.InputFile)
-	if err != nil {
-		slog.Error("Could not read projects file", "error", err)
-		return
-	}
+	projects := config.Projects
 	if len(projects) == 0 {
-		slog.Warn("⚠️ Файл с проектами пуст.")
+		slog.Warn("⚠️ Список проектов пуст.")
 		return
 	}
 
@@ -516,7 +531,7 @@ func runTranslation(ctx context.Context) {
 				return
 			}
 
-			if err := removeURLFromFile(config.InputFile, projectURL); err != nil {
+			if err := removeProjectFromConfig(projectURL); err != nil {
 				slog.Warn("⚠️ Ошибка при удалении из файла", "url", projectURL, "error", err)
 			}
 
@@ -531,6 +546,22 @@ func runTranslation(ctx context.Context) {
 }
 
 var fileMutex sync.Mutex
+
+func removeProjectFromConfig(urlToRemove string) error {
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	cfg := loadConfig()
+	var newProjects []string
+	for _, p := range cfg.Projects {
+		if p != urlToRemove {
+			newProjects = append(newProjects, p)
+		}
+	}
+	cfg.Projects = newProjects
+	saveConfig(cfg)
+	return nil
+}
 
 func removeURLFromFile(filePath string, urlToRemove string) error {
 	fileMutex.Lock()
@@ -577,9 +608,9 @@ func notifyTelegram(config Config, tgBot *telebot.Bot, messageText string) {
 func ensureLogin(ctx context.Context, browser playwright.Browser, config Config, checkURL string) (playwright.BrowserContext, playwright.Page, error) {
 	var ctxOpts playwright.BrowserNewContextOptions
 
-	if _, err := os.Stat(config.AuthStateFile); err == nil {
+	if _, err := os.Stat(filepath.Join("data", "auth.json")); err == nil {
 		slog.Info("🔑 Найден файл авторизации, проверяем...")
-		ctxOpts.StorageStatePath = playwright.String(config.AuthStateFile)
+		ctxOpts.StorageStatePath = playwright.String(filepath.Join("data", "auth.json"))
 	}
 
 	contextBrowser, err := browser.NewContext(ctxOpts)
@@ -637,7 +668,7 @@ func ensureLogin(ctx context.Context, browser playwright.Browser, config Config,
 		}
 
 		// Сохраняем состояние
-		if _, err := contextBrowser.StorageState(config.AuthStateFile); err != nil {
+		if _, err := contextBrowser.StorageState(filepath.Join("data", "auth.json")); err != nil {
 			return contextBrowser, page, fmt.Errorf("could not save storage state: %v", err)
 		}
 		slog.Info("💾 Авторизация сохранена")
@@ -651,29 +682,6 @@ func ensureLogin(ctx context.Context, browser playwright.Browser, config Config,
 func byId(page playwright.Page, id string) playwright.Locator {
 	selector := fmt.Sprintf("[id='%s']", id)
 	return page.Locator(selector)
-}
-
-func readProjects(path string) ([]string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		// Создадим пустой если нет
-		if os.IsNotExist(err) {
-			os.WriteFile(path, []byte(""), 0644)
-			return []string{}, nil
-		}
-		return nil, err
-	}
-	defer file.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
-			lines = append(lines, line)
-		}
-	}
-	return lines, scanner.Err()
 }
 
 func processProject(ctx context.Context, page playwright.Page, projectURL string, config Config) (string, error) {
