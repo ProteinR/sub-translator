@@ -171,6 +171,18 @@ func setupLogger() *os.File {
 }
 
 func main() {
+	// Меняем текущую директорию на директорию исполняемого файла
+	exePath, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exePath)
+		// Если запускаем через `go run`, исполняемый файл находится во временной папке,
+		// так что менять директорию нужно только если это не `go run`.
+		// Простой способ проверить это — посмотреть на путь:
+		if !strings.Contains(exeDir, "go-build") && !strings.Contains(exeDir, "Temp") && !strings.Contains(exeDir, "tmp") {
+			os.Chdir(exeDir)
+		}
+	}
+
 	// Настройка логгера
 	logFile := setupLogger()
 	defer logFile.Close()
@@ -517,7 +529,7 @@ func scrollAndCollect(page playwright.Page, config Config, filename string) ([]T
 			seen[id] = true
 			newAddedThisStep++
 
-			// Проверка, что перевода еще нет
+			// Проверка на пустоту
 			targetCell := row.Locator(fmt.Sprintf(".cell-trans[data-lang-id='%s']", config.TargetLangID))
 			isEmpty, _ := targetCell.Locator(".empty").Count()
 			cellText, _ := targetCell.InnerText()
