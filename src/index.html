@@ -70,6 +70,10 @@
                         <label class="block text-xs font-medium text-gray-500">GEMINI_API_KEY_2 (Backup)</label>
                         <input type="text" id="cfg_geminiApiKey2" class="w-full border rounded p-1.5 text-sm" placeholder="Optional backup key">
                     </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500">GEMINI_API_KEY_3 (Backup 2)</label>
+                        <input type="text" id="cfg_geminiApiKey3" class="w-full border rounded p-1.5 text-sm" placeholder="Optional 3rd backup key">
+                    </div>
                     <div class="flex gap-2">
                         <div class="flex-1">
                             <label class="block text-xs font-medium text-gray-500">MODEL</label>
@@ -439,6 +443,16 @@
                     updateUIState(true);
                 } else if (event.data === "___PROCESS_STOPPED___") {
                     updateUIState(false);
+                } else if (event.data.startsWith("___PROJECT_COMPLETED___|")) {
+                    const completedUrl = event.data.split("|")[1];
+                    const inputs = Array.from(DOM.projectsContainer.querySelectorAll('.project-url'));
+                    inputs.forEach(input => {
+                        if (input.value.trim() === completedUrl) {
+                            input.parentElement.remove();
+                        }
+                    });
+                    updateProjectsCount();
+                    autoSave();
                 } else {
                     appendLog(event.data);
                 }

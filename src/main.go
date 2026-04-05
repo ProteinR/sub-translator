@@ -94,6 +94,7 @@ func (b *SSEBroker) BroadcastControl(msg string) {
 type Config struct {
 	GeminiAPIKey    string
 	GeminiAPIKey2   string
+	GeminiAPIKey3   string
 	MaxConcurrency  int
 	TargetLangID    string
 	TranslateToLang string
@@ -150,6 +151,7 @@ func toInternalConfig(fc FileConfig) Config {
 	return Config{
 		GeminiAPIKey:    fc.GeminiAPIKey,
 		GeminiAPIKey2:   fc.GeminiAPIKey2,
+		GeminiAPIKey3:   fc.GeminiAPIKey3,
 		MaxConcurrency:  fc.MaxConcurrency,
 		TargetLangID:    targetLangIdByText(fc.TranslateTo),
 		TranslateToLang: fc.TranslateTo,
@@ -259,6 +261,7 @@ Grammar: If the speaker is a woman:
 type FileConfig struct {
 	GeminiAPIKey    string            `json:"geminiApiKey"`
 	GeminiAPIKey2   string            `json:"geminiApiKey2"`
+	GeminiAPIKey3   string            `json:"geminiApiKey3"`
 	MaxConcurrency  int               `json:"maxConcurrency"`
 	TranslateTo     string            `json:"translateTo"`
 	Model           string            `json:"model"`
@@ -535,6 +538,7 @@ func runTranslation(ctx context.Context) {
 				slog.Warn("⚠️ Ошибка при удалении из файла", "url", projectURL, "error", err)
 			}
 
+			broker.BroadcastControl("___PROJECT_COMPLETED___|" + projectURL)
 			slog.Info("✅ Завершено", "url", projectURL)
 			messageText := fmt.Sprintf("✅ Завершено:\n<a href=\"%s\">%s</a>", projectURL, filename)
 			notifyTelegram(config, tgBot, messageText)
@@ -873,13 +877,15 @@ Data to translate: %s`, config.Prompt, func() string { b, _ := json.Marshal(tmap
 	body, err := doCall(config.GeminiAPIKey)
 	if err != nil {
 		if config.GeminiAPIKey2 != "" {
-			slog.Warn("⚠️ Ошибка с основным API ключом, пробуем запасной...", "error", err)
+			slog.Warn("⚠️ Ошибка с основным API ключом, пробуем запасной 2...", "error", err)
 			body, err = doCall(config.GeminiAPIKey2)
-			if err != nil {
-				return nil, fmt.Errorf("оба ключа вернули ошибку: %v", err)
-			}
-		} else {
-			return nil, err
+		}
+		if err != nil && config.GeminiAPIKey3 != "" {
+			slog.Warn("⚠️ Ошибка со вторым API ключом, пробуем запасной 3...", "error", err)
+			body, err = doCall(config.GeminiAPIKey3)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("все доступные ключи вернули ошибку: %v", err)
 		}
 	}
 
