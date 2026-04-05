@@ -140,6 +140,10 @@
                     <h2 class="font-semibold text-gray-700">Projects to Translate</h2>
                     <span class="text-xs text-gray-500" id="projects-count">0 projects</span>
                 </div>
+                <div class="mb-3 flex gap-2 shrink-0">
+                    <input type="text" id="new-project-input" class="flex-1 border border-indigo-300 rounded p-1.5 text-sm font-mono focus:ring focus:ring-indigo-200 focus:outline-none placeholder-gray-400" placeholder="Paste URL and press Enter...">
+                    <button id="btn-add-project" class="bg-indigo-500 text-white px-3 py-1.5 rounded text-sm hover:bg-indigo-400 font-medium transition shrink-0">Add</button>
+                </div>
                 <div id="projects-container" class="flex-1 overflow-y-auto space-y-2 pr-2">
                     <!-- Dynamic inputs will be inserted here -->
                 </div>
@@ -180,19 +184,20 @@
             btnClearLogs: document.getElementById('btnClearLogs'),
             toast: document.getElementById('toast'),
             translateToRadios: document.querySelectorAll('input[name="translate_dir"]'),
-            appVersion: document.getElementById('app-version')
+            appVersion: document.getElementById('app-version'),
+            newProjectInput: document.getElementById('new-project-input'),
+            btnAddProject: document.getElementById('btn-add-project')
         };
 
         let isRunning = false;
 
         function createProjectInput(value = "") {
             const wrap = document.createElement('div');
-            wrap.className = "flex gap-2 items-center";
+            wrap.className = "flex gap-2 items-center shrink-0";
 
             const input = document.createElement('input');
             input.type = "text";
             input.className = "flex-1 border rounded p-1.5 text-sm font-mono focus:ring focus:ring-indigo-200 focus:outline-none project-url";
-            input.placeholder = "https://...";
             input.value = value;
 
             const btnRemove = document.createElement('button');
@@ -200,12 +205,13 @@
             btnRemove.className = "text-gray-400 hover:text-red-500 font-bold px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded";
             btnRemove.onclick = () => {
                 wrap.remove();
-                ensureEmptyInput();
                 updateProjectsCount();
             };
 
             input.addEventListener('input', () => {
-                ensureEmptyInput();
+                if (input.value.trim() === "") {
+                    wrap.remove();
+                }
                 updateProjectsCount();
             });
 
@@ -214,13 +220,37 @@
             return wrap;
         }
 
-        function ensureEmptyInput() {
-            const inputs = Array.from(DOM.projectsContainer.querySelectorAll('.project-url'));
-            const hasEmpty = inputs.some(inp => inp.value.trim() === "");
-            if (!hasEmpty) {
-                DOM.projectsContainer.appendChild(createProjectInput());
-            }
+        function handleAddProject(val) {
+            const urls = val.split('\n').map(l => l.trim()).filter(l => l !== "" && !l.startsWith("#"));
+            // Reverse so they are prepended in the original top-to-bottom order
+            urls.reverse().forEach(url => {
+                DOM.projectsContainer.prepend(createProjectInput(url));
+            });
+            updateProjectsCount();
         }
+
+        DOM.newProjectInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleAddProject(DOM.newProjectInput.value);
+                DOM.newProjectInput.value = '';
+            }
+        });
+
+        DOM.newProjectInput.addEventListener('paste', (e) => {
+            const pasteData = (e.clipboardData || window.clipboardData).getData('text');
+            if (pasteData.includes('\n')) {
+                e.preventDefault();
+                handleAddProject(pasteData);
+                DOM.newProjectInput.value = '';
+            }
+        });
+
+        DOM.btnAddProject.addEventListener('click', () => {
+            handleAddProject(DOM.newProjectInput.value);
+            DOM.newProjectInput.value = '';
+            DOM.newProjectInput.focus();
+        });
 
         function getProjectList() {
             const inputs = Array.from(DOM.projectsContainer.querySelectorAll('.project-url'));
@@ -238,7 +268,6 @@
             urls.forEach(url => {
                 DOM.projectsContainer.appendChild(createProjectInput(url));
             });
-            ensureEmptyInput();
             updateProjectsCount();
         }
 
