@@ -9,46 +9,58 @@ NC='\033[0m' # Без цвета
 
 echo -e "${BLUE}=== Loka Translator Launcher ===${NC}"
 
-# Переходим в директорию скрипта (чтобы можно было запускать откуда угодно)
-cd "$(dirname "$0")"
+# Переходим в корневую директорию проекта (на уровень выше, чем папка src)
+cd "$(dirname "$0")/.."
 
 # 1. Попытка обновить проект из Git
 echo -e "${BLUE}[1/3] Проверка обновлений (git pull)...${NC}"
+
 # Сохраняем локальные изменения (если есть) перед pull
 git stash -q
-GIT_PULL_OUTPUT=$(git pull origin main 2>&1)
-PULL_EXIT_CODE=$?
 
-# Если ветки main нет, пробуем master
-if [ $PULL_EXIT_CODE -ne 0 ]; then
-    GIT_PULL_OUTPUT=$(git pull origin master 2>&1)
-    PULL_EXIT_CODE=$?
-fi
+# Выполняем git fetch перед проверкой
+git fetch -q origin
 
-# Возвращаем локальные изменения (игнорируя ошибки, если stash был пуст)
-git stash pop -q 2>/dev/null
+# Получаем локальный и удаленный хэши коммитов
+LOCAL=$(git rev-parse @)
+REMOTE=$(git rev-parse @{u} 2>/dev/null) # Может быть пустым, если ветка не отслеживается
+BASE=$(git merge-base @ @{u} 2>/dev/null)
 
-if [ $PULL_EXIT_CODE -eq 0 ]; then
-    # Проверяем, были ли реальные изменения в коде
-    if echo "$GIT_PULL_OUTPUT" | grep -q "Already up to date."; then
-         echo -e "${GREEN}Обновлений нет. Проект актуален.${NC}"
-         NEEDS_BUILD=false
-         # Проверяем наличие бинарника, если его нет - все равно надо билдить
-         if [ ! -f "translator-web" ]; then
-             NEEDS_BUILD=true
-         fi
-    else
-         echo -e "${GREEN}✅ Загружены новые обновления!${NC}"
-         NEEDS_BUILD=true
+NEEDS_BUILD=false
+
+if [ "$LOCAL" = "$REMOTE" ]; then
+    echo -e "${GREEN}Обновлений нет. Проект актуален.${NC}"
+    # Проверяем наличие бинарника, если его нет - все равно надо билдить
+    if [ ! -f "translator-web" ]; then
+        NEEDS_BUILD=true
     fi
 else
-    echo -e "${YELLOW}⚠️ Не удалось получить обновления из Git (возможно, нет интернета). Запускаем локальную версию.${NC}"
-    NEEDS_BUILD=false
-    if [ ! -f "translator-web" ]; then
-         echo -e "${RED}Бинарный файл не найден, попробуем собрать...${NC}"
+    # Выполняем git pull
+    GIT_PULL_OUTPUT=$(git pull origin main 2>&1)
+    PULL_EXIT_CODE=$?
+
+    # Если ветки main нет, пробуем master
+    if [ $PULL_EXIT_CODE -ne 0 ]; then
+        GIT_PULL_OUTPUT=$(git pull origin master 2>&1)
+        PULL_EXIT_CODE=$?
+    fi
+
+    if [ $PULL_EXIT_CODE -eq 0 ]; then
+         echo -e "${GREEN}✅ Загружены новые обновления!${NC}"
+         echo -e "$GIT_PULL_OUTPUT"
          NEEDS_BUILD=true
+    else
+        echo -e "${YELLOW}⚠️ Не удалось получить обновления из Git (возможно, нет интернета). Запускаем локальную версию.${NC}"
+        echo -e "Git output: $GIT_PULL_OUTPUT"
+        if [ ! -f "translator-web" ]; then
+             echo -e "${RED}Бинарный файл не найден, попробуем собрать...${NC}"
+             NEEDS_BUILD=true
+        fi
     fi
 fi
+
+# Возвращаем локальные изменения
+git stash pop -q 2>/dev/null
 
 # 2. Сборка проекта (если нужно)
 if [ "$NEEDS_BUILD" = true ]; then
