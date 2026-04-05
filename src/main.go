@@ -30,7 +30,7 @@ var indexHTML []byte
 // ============================================================
 // 0. ВЕРСИЯ И СОСТОЯНИЕ
 // ============================================================
-const AppVersion = "1.2.0-WebUI"
+const AppVersion = "1.3.0-WebUI"
 
 var (
 	appCancel context.CancelFunc
