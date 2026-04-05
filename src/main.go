@@ -37,6 +37,9 @@ var (
 	isRunning bool
 	runMutex  sync.Mutex
 	broker    *SSEBroker
+
+	currentKeyIndex int
+	keyMutex        sync.Mutex
 )
 
 // ============================================================
@@ -874,19 +877,55 @@ Data to translate: %s`, config.Prompt, func() string { b, _ := json.Marshal(tmap
 		return body, nil
 	}
 
-	body, err := doCall(config.GeminiAPIKey)
+	var keys []string
+	if config.GeminiAPIKey != "" {
+		keys = append(keys, config.GeminiAPIKey)
+	}
+	if config.GeminiAPIKey2 != "" {
+		keys = append(keys, config.GeminiAPIKey2)
+	}
+	if config.GeminiAPIKey3 != "" {
+		keys = append(keys, config.GeminiAPIKey3)
+	}
+
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("нет доступных API ключей")
+	}
+
+	keyMutex.Lock()
+	startIndex := currentKeyIndex % len(keys)
+	keyMutex.Unlock()
+
+	var body []byte
+	var err error
+
+	for i := 0; i < len(keys); i++ {
+		idx := (startIndex + i) % len(keys)
+		key := keys[idx]
+
+		actualKeyNumber := 1
+		if key == config.GeminiAPIKey2 {
+			actualKeyNumber = 2
+		} else if key == config.GeminiAPIKey3 {
+			actualKeyNumber = 3
+		}
+
+		body, err = doCall(key)
+		if err == nil {
+			if i > 0 {
+				keyMutex.Lock()
+				currentKeyIndex = idx
+				keyMutex.Unlock()
+				slog.Info(fmt.Sprintf("🔄 Установлен новый дефолтный API ключ (ключ %d)", actualKeyNumber))
+			}
+			break
+		} else {
+			slog.Warn(fmt.Sprintf("⚠️ Ошибка с API ключом %d, пробуем следующий...", actualKeyNumber), "error", err)
+		}
+	}
+
 	if err != nil {
-		if config.GeminiAPIKey2 != "" {
-			slog.Warn("⚠️ Ошибка с основным API ключом, пробуем запасной 2...", "error", err)
-			body, err = doCall(config.GeminiAPIKey2)
-		}
-		if err != nil && config.GeminiAPIKey3 != "" {
-			slog.Warn("⚠️ Ошибка со вторым API ключом, пробуем запасной 3...", "error", err)
-			body, err = doCall(config.GeminiAPIKey3)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("все доступные ключи вернули ошибку: %v", err)
-		}
+		return nil, fmt.Errorf("все доступные ключи вернули ошибку: %v", err)
 	}
 
 	respStr := string(body)
