@@ -48,7 +48,6 @@
             <span id="app-version" class="text-xs bg-indigo-500 px-2 py-0.5 rounded-full font-mono font-medium tracking-wide"></span>
         </div>
         <div class="space-x-2">
-            <button id="btnSave" class="bg-indigo-500 hover:bg-indigo-400 text-white px-4 py-2 rounded transition font-medium text-sm">Save Config</button>
             <button id="btnStart" class="bg-green-500 hover:bg-green-400 text-white px-4 py-2 rounded transition font-medium text-sm">Start Translation</button>
             <button id="btnStop" class="bg-red-500 hover:bg-red-400 text-white px-4 py-2 rounded transition font-medium text-sm hidden">Stop</button>
         </div>
@@ -150,7 +149,6 @@
             </div>
             <div class="flex-1 flex flex-col p-4">
                 <h2 class="font-semibold text-gray-700 mb-2">Gemini Prompt</h2>
-                <p class="text-xs text-gray-500 mb-2" id="prompt-label">Current prompt file.</p>
                 <textarea id="prompt" class="w-full flex-1 border rounded p-2 text-sm font-mono resize-none focus:ring focus:ring-indigo-200 focus:outline-none"></textarea>
             </div>
         </div>
@@ -176,8 +174,6 @@
             projectsContainer: document.getElementById('projects-container'),
             projectsCount: document.getElementById('projects-count'),
             prompt: document.getElementById('prompt'),
-            promptLabel: document.getElementById('prompt-label'),
-            btnSave: document.getElementById('btnSave'),
             btnStart: document.getElementById('btnStart'),
             btnStop: document.getElementById('btnStop'),
             terminal: document.getElementById('terminal'),
@@ -206,6 +202,7 @@
             btnRemove.onclick = () => {
                 wrap.remove();
                 updateProjectsCount();
+                autoSave();
             };
 
             input.addEventListener('input', () => {
@@ -213,6 +210,7 @@
                     wrap.remove();
                 }
                 updateProjectsCount();
+                autoSave();
             });
 
             wrap.appendChild(input);
@@ -227,6 +225,7 @@
                 DOM.projectsContainer.prepend(createProjectInput(url));
             });
             updateProjectsCount();
+            autoSave();
         }
 
         DOM.newProjectInput.addEventListener('keydown', (e) => {
@@ -327,7 +326,6 @@
                     DOM.appVersion.textContent = `v${data.version}`;
                 }
                 
-                updatePromptLabel();
                 updateUIState(data.isRunning);
                 
                 appendLog("✅ Configuration loaded.");
@@ -337,7 +335,15 @@
             }
         }
 
-        async function saveData() {
+        let saveTimeout;
+        function autoSave() {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                saveData(true);
+            }, 800);
+        }
+
+        async function saveData(silent = false) {
             const config = {};
             DOM.cfgInputs.forEach(input => {
                 const key = input.id.replace('cfg_', '');
@@ -366,14 +372,12 @@
                 });
                 
                 if(res.ok) {
-                    showToast("Configuration saved!");
-                    appendLog("💾 Configuration saved successfully.");
-                    updatePromptLabel();
+                    if (!silent) showToast("Configuration saved!");
                 } else {
                     throw new Error(await res.text());
                 }
             } catch(e) {
-                showToast("Save failed", true);
+                if (!silent) showToast("Save failed", true);
                 appendLog("❌ Save error: " + e);
                 throw e; // rethrow for start to catch
             }
@@ -381,7 +385,7 @@
 
         async function startTask() {
             try {
-                await saveData(); // Always save before starting
+                await saveData(false); // Always save explicitly before starting
                 
                 DOM.btnStart.disabled = true;
                 DOM.btnStart.innerHTML = '<span class="spinner"></span> Starting...';
@@ -413,26 +417,16 @@
             }
         }
 
-        function updatePromptLabel() {
-            let lang = 'PL';
-            DOM.translateToRadios.forEach(r => { if(r.checked) lang = r.value; });
-            DOM.promptLabel.textContent = `File: prompt_to_${lang}.txt`;
-        }
-
         function updateUIState(running) {
             isRunning = running;
             if(running) {
                 DOM.btnStart.classList.add('hidden');
                 DOM.btnStop.classList.remove('hidden');
-                DOM.btnSave.disabled = true;
-                DOM.btnSave.classList.add('opacity-50', 'cursor-not-allowed');
             } else {
                 DOM.btnStart.classList.remove('hidden');
                 DOM.btnStart.disabled = false;
                 DOM.btnStart.innerHTML = 'Start Translation';
                 DOM.btnStop.classList.add('hidden');
-                DOM.btnSave.disabled = false;
-                DOM.btnSave.classList.remove('opacity-50', 'cursor-not-allowed');
             }
         }
 
@@ -470,22 +464,22 @@
                 showToast("Failed to fetch prompt", true);
             }
         }
+function handleLangChange() {
+    let lang = 'PL';
+    let oldLang = window.currentLang;
+    DOM.translateToRadios.forEach(r => { if(r.checked) lang = r.value; });
 
-        function handleLangChange() {
-            updatePromptLabel();
-            let lang = 'PL';
-            let oldLang = window.currentLang;
-            DOM.translateToRadios.forEach(r => { if(r.checked) lang = r.value; });
-            
-            if (oldLang && window.currentPrompts) {
-                window.currentPrompts[oldLang] = DOM.prompt.value;
-            }
-            window.currentLang = lang;
-            fetchPromptForLang(lang);
-        }
+    if (oldLang && window.currentPrompts) {
+        window.currentPrompts[oldLang] = DOM.prompt.value;
+    }
+    window.currentLang = lang;
+    fetchPromptForLang(lang);
+    autoSave();
+}
 
         // Event Listeners
-        DOM.btnSave.addEventListener('click', saveData);
+        DOM.cfgInputs.forEach(input => input.addEventListener('input', autoSave));
+        DOM.prompt.addEventListener('input', autoSave);
         DOM.btnStart.addEventListener('click', startTask);
         DOM.btnStop.addEventListener('click', stopTask);
         DOM.translateToRadios.forEach(r => r.addEventListener('change', handleLangChange));
