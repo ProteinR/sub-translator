@@ -30,7 +30,7 @@ var indexHTML []byte
 // ============================================================
 // 0. ВЕРСИЯ И СОСТОЯНИЕ
 // ============================================================
-const AppVersion = "1.3.0-WebUI"
+const AppVersion = "1.3.1-WebUI"
 
 var (
 	appCancel context.CancelFunc
@@ -200,6 +200,36 @@ type GeminiResponse struct {
 	Results []TranslationItem `json:"results"`
 }
 
+type CustomHandler struct {
+	out   io.Writer
+	level slog.Level
+}
+
+func (h *CustomHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level
+}
+
+func (h *CustomHandler) Handle(ctx context.Context, r slog.Record) error {
+	timeStr := r.Time.Format("15:04:05")
+
+	var attrs string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Value.Kind() == slog.KindString {
+			attrs += fmt.Sprintf(" %s=%q", a.Key, a.Value.String())
+		} else {
+			attrs += fmt.Sprintf(" %s=%v", a.Key, a.Value.Any())
+		}
+		return true
+	})
+
+	msg := fmt.Sprintf("%s %s%s\n", timeStr, r.Message, attrs)
+	_, err := h.out.Write([]byte(msg))
+	return err
+}
+
+func (h *CustomHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *CustomHandler) WithGroup(name string) slog.Handler       { return h }
+
 func setupLogger() *os.File {
 	now := time.Now()
 	dirName := filepath.Join("data", "logs", now.Format("2006-01-02"))
@@ -217,15 +247,10 @@ func setupLogger() *os.File {
 		multiWriter = io.MultiWriter(os.Stdout, broker)
 	}
 
-	handler := slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				a.Value = slog.StringValue(a.Value.Time().Format("15:04:05"))
-			}
-			return a
-		},
-	})
+	handler := &CustomHandler{
+		out:   multiWriter,
+		level: slog.LevelInfo,
+	}
 
 	slog.SetDefault(slog.New(handler))
 	return file
@@ -524,7 +549,11 @@ func runTranslation(ctx context.Context) {
 			defer wg.Done()
 			defer func() { pagePool <- p }()
 
-			slog.Info("🚀 Старт обработки", "url", projectURL)
+			modeText := "только пустые"
+			if config.OverwriteFilled {
+				modeText = "перезапись всех"
+			}
+			slog.Info(fmt.Sprintf("🚀 Старт обработки (Режим: %s)", modeText), "url", projectURL)
 
 			// Передаем ctx внутрь processProject (упрощенно проверяем отмену внутри долгих функций)
 			filename, err := processProject(ctx, p, projectURL, config)
@@ -774,7 +803,11 @@ func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, 
 	maxNoNewRetries := 5
 	totalScrolled := 0.0
 
-	slog.Info("🔍 Начинаю поиск пустых строк", "file", filename)
+	modeLog := "пустых"
+	if config.OverwriteFilled {
+		modeLog = "всех"
+	}
+	slog.Info(fmt.Sprintf("🔍 Начинаю поиск %s строк", modeLog), "file", filename)
 
 	for noNewElementsCount < maxNoNewRetries {
 		select {
@@ -1006,7 +1039,7 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 		}
 
 		if !found {
-			return fmt.Errorf("could not find row %s in DOM after scrolling", item.ID)
+			return fmt.Errorf("could not find row %s in DOM after scrolling (original text: %q)", item.ID, item.Original)
 		}
 
 		row := page.Locator(selector)
@@ -1022,12 +1055,20 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 
 		time.Sleep(config.EditorLoadDelay)
 
-		// Очищаем поле (выделяем всё и удаляем)
-		page.Keyboard().Press("Meta+A")
-		page.Keyboard().Press("Control+A")
-		page.Keyboard().Press("Backspace")
+		// Очищаем поле через выделение и удаление комбинацией клавиш
+		// Очищаем поле через выделение и удаление комбинацией клавиш в зависимости от ОС
+		if runtime.GOOS == "darwin" {
+			page.Keyboard().Press("Meta+a")
+			time.Sleep(50 * time.Millisecond)
+			page.Keyboard().Press("Meta+Backspace") // Command+Backspace как просил пользователь
+			time.Sleep(50 * time.Millisecond)
+			page.Keyboard().Press("Backspace") // На всякий случай обычный бэкспейс
+		} else {
+			page.Keyboard().Press("Control+a")
+			time.Sleep(50 * time.Millisecond)
+			page.Keyboard().Press("Backspace")
+		}
 		time.Sleep(100 * time.Millisecond)
-
 		err = page.Keyboard().Type(item.Translation)
 		if err != nil {
 			return errors.New("could not type translation: " + err.Error())
@@ -1038,11 +1079,11 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 		saveBtn := page.Locator("button.save.btn-primary")
 		err = saveBtn.Click()
 		if err != nil {
-			return errors.New("could not click save btn: " + err.Error())
+			return errors.New("could not click btn: " + err.Error())
 		}
 
-		editorSelector := ".ace_text-input, textarea:not([style*='display: none']), [contenteditable='true']"
 		for j := 0; j < 10; j++ {
+			editorSelector := ".ace_text-input, textarea:not([style*='display: none']), [contenteditable='true']"
 			if visible, _ := page.IsVisible(editorSelector); !visible {
 				break
 			}
