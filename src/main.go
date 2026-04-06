@@ -30,7 +30,7 @@ var indexHTML []byte
 // ============================================================
 // 0. ВЕРСИЯ И СОСТОЯНИЕ
 // ============================================================
-const AppVersion = "1.3.1-WebUI"
+const AppVersion = "1.3.2-WebUI"
 
 var (
 	appCancel context.CancelFunc
@@ -1048,28 +1048,81 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 			return errors.New("could not scroll to row: " + err.Error())
 		}
 		targetCell := row.Locator(fmt.Sprintf(".cell-trans[data-lang-id='%s']", config.TargetLangID))
-		err = targetCell.Click()
+		clickTarget := targetCell.Locator(".highlight").First()
+
+		err = clickTarget.ScrollIntoViewIfNeeded()
+		if err == nil {
+			time.Sleep(50 * time.Millisecond)
+			// Сдвигаем экран чуть вверх, чтобы избежать перекрытия sticky-хэдером
+			_, _ = page.Evaluate(`window.scrollBy(0, -150)`)
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		err = clickTarget.Click()
 		if err != nil {
-			return errors.New("could not click cell: " + err.Error())
+			return errors.New("could not click cell highlight: " + err.Error())
+		}
+
+		editorSelector := ".ace_text-input, textarea:not([style*='display: none']), [contenteditable='true']"
+		editorLocator := row.Locator(editorSelector).First()
+		editorFound := false
+
+		for attempt := 0; attempt < 10; attempt++ {
+			if visible, _ := editorLocator.IsVisible(); visible {
+				editorFound = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		if !editorFound {
+			// Пробуем еще раз с force
+			_ = clickTarget.Click(playwright.LocatorClickOptions{Force: playwright.Bool(true)})
+			for attempt := 0; attempt < 5; attempt++ {
+				time.Sleep(100 * time.Millisecond)
+				if visible, _ := editorLocator.IsVisible(); visible {
+					editorFound = true
+					break
+				}
+			}
+		}
+
+		if !editorFound {
+			logDir := filepath.Join("data", "logs")
+			_ = os.MkdirAll(logDir, 0755)
+			timestamp := time.Now().Format("20060102_150405")
+			screenshotPath := filepath.Join(logDir, fmt.Sprintf("error_editor_open_%s.png", timestamp))
+			_, _ = page.Screenshot(playwright.PageScreenshotOptions{Path: playwright.String(screenshotPath)})
+			htmlPath := filepath.Join(logDir, fmt.Sprintf("error_editor_open_%s.html", timestamp))
+			if content, contentErr := page.Content(); contentErr == nil {
+				_ = os.WriteFile(htmlPath, []byte(content), 0644)
+			}
+			return fmt.Errorf("editor input field did not appear after clicking cell for item ID: %s. Debug screenshot saved to %s", item.ID, screenshotPath)
+		}
+
+		// Убеждаемся, что фокус именно в редакторе (чтобы Meta+A выделило текст внутри, а не всю страницу)
+		err = editorLocator.Focus()
+		if err != nil {
+			_ = editorLocator.Click(playwright.LocatorClickOptions{Force: playwright.Bool(true)})
 		}
 
 		time.Sleep(config.EditorLoadDelay)
 
-		// Очищаем поле через выделение и удаление комбинацией клавиш
 		// Очищаем поле через выделение и удаление комбинацией клавиш в зависимости от ОС
 		if runtime.GOOS == "darwin" {
-			page.Keyboard().Press("Meta+a")
+			_ = editorLocator.Press("Meta+a")
 			time.Sleep(50 * time.Millisecond)
-			page.Keyboard().Press("Meta+Backspace") // Command+Backspace как просил пользователь
+			_ = editorLocator.Press("Meta+Backspace") // Command+Backspace как просил пользователь
 			time.Sleep(50 * time.Millisecond)
-			page.Keyboard().Press("Backspace") // На всякий случай обычный бэкспейс
+			_ = editorLocator.Press("Backspace") // На всякий случай обычный бэкспейс
 		} else {
-			page.Keyboard().Press("Control+a")
+			_ = editorLocator.Press("Control+a")
 			time.Sleep(50 * time.Millisecond)
-			page.Keyboard().Press("Backspace")
+			_ = editorLocator.Press("Backspace")
 		}
 		time.Sleep(100 * time.Millisecond)
-		err = page.Keyboard().Type(item.Translation)
+
+		err = editorLocator.Type(item.Translation)
 		if err != nil {
 			return errors.New("could not type translation: " + err.Error())
 		}
@@ -1079,12 +1132,31 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 		saveBtn := page.Locator("button.save.btn-primary")
 		err = saveBtn.Click()
 		if err != nil {
-			return errors.New("could not click btn: " + err.Error())
+			// Организуем сохранение контекста ошибки для дебага (скриншот и HTML)
+			logDir := filepath.Join("data", "logs")
+			_ = os.MkdirAll(logDir, 0755)
+			timestamp := time.Now().Format("20060102_150405")
+
+			screenshotPath := filepath.Join(logDir, fmt.Sprintf("error_click_btn_%s.png", timestamp))
+			_, screenshotErr := page.Screenshot(playwright.PageScreenshotOptions{
+				Path: playwright.String(screenshotPath),
+			})
+			if screenshotErr != nil {
+				slog.Error("Не удалось сохранить скриншот при ошибке нажатия кнопки", "error", screenshotErr)
+			}
+
+			htmlPath := filepath.Join(logDir, fmt.Sprintf("error_click_btn_%s.html", timestamp))
+			if content, contentErr := page.Content(); contentErr == nil {
+				_ = os.WriteFile(htmlPath, []byte(content), 0644)
+			} else {
+				slog.Error("Не удалось сохранить HTML при ошибке нажатия кнопки", "error", contentErr)
+			}
+
+			return fmt.Errorf("could not click 'Save' button (selector: 'button.save.btn-primary') for item ID: %s (text: %q). Debug screenshot saved to %s. Original error: %w", item.ID, item.Original, screenshotPath, err)
 		}
 
 		for j := 0; j < 10; j++ {
-			editorSelector := ".ace_text-input, textarea:not([style*='display: none']), [contenteditable='true']"
-			if visible, _ := page.IsVisible(editorSelector); !visible {
+			if visible, _ := editorLocator.IsVisible(); !visible {
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
