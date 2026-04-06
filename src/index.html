@@ -71,6 +71,13 @@
                     <input type="radio" name="translate_dir" value="EN"> PL to EN
                 </label>
             </div>
+            <label class="flex items-center gap-2 cursor-pointer text-sm font-medium mr-2 text-white hover:text-indigo-200" title="Внимание: Включите, чтобы перезаписать уже существующие переводы!">
+                <div class="relative">
+                    <input type="checkbox" id="cfg_overwriteFilled" class="sr-only peer">
+                    <div class="w-9 h-5 bg-gray-400 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"></div>
+                </div>
+                Перезапись всех переводов
+            </label>
             <button id="btnStart" class="bg-green-500 hover:bg-green-400 text-white px-4 py-2 rounded transition font-medium text-sm">Start Translation</button>
             <button id="btnStop" class="bg-red-500 hover:bg-red-400 text-white px-4 py-2 rounded transition font-medium text-sm hidden">Stop</button>
         </div>
@@ -352,7 +359,11 @@
                     DOM.cfgInputs.forEach(input => {
                         const key = input.id.replace('cfg_', '');
                         if(data.config[key] !== undefined) {
-                            input.value = data.config[key];
+                            if (input.type === 'checkbox') {
+                                input.checked = data.config[key];
+                            } else {
+                                input.value = data.config[key];
+                            }
                         }
                     });
 
@@ -399,6 +410,8 @@
                 const key = input.id.replace('cfg_', '');
                 if (input.type === 'number') {
                     config[key] = parseInt(input.value, 10) || 0;
+                } else if (input.type === 'checkbox') {
+                    config[key] = input.checked;
                 } else {
                     config[key] = input.value;
                 }
@@ -538,7 +551,10 @@ function handleLangChange() {
 }
 
         // Event Listeners
-        DOM.cfgInputs.forEach(input => input.addEventListener('input', autoSave));
+        DOM.cfgInputs.forEach(input => {
+            input.addEventListener('input', autoSave);
+            input.addEventListener('change', autoSave);
+        });
         DOM.prompt.addEventListener('input', autoSave);
         DOM.btnStart.addEventListener('click', startTask);
         DOM.btnStop.addEventListener('click', stopTask);

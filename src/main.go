@@ -112,6 +112,7 @@ type Config struct {
 	BeforeSaveDelay time.Duration
 	RowNextDelay    time.Duration
 	Projects        []string
+	OverwriteFilled bool
 }
 
 func loadConfig() FileConfig {
@@ -169,6 +170,7 @@ func toInternalConfig(fc FileConfig) Config {
 		BeforeSaveDelay: time.Duration(fc.BeforeSaveDelay) * time.Millisecond,
 		RowNextDelay:    time.Duration(fc.RowNextDelay) * time.Millisecond,
 		Projects:        fc.Projects,
+		OverwriteFilled: fc.OverwriteFilled,
 	}
 }
 
@@ -278,6 +280,7 @@ type FileConfig struct {
 	RowNextDelay    int               `json:"rowNextDelay"`
 	Projects        []string          `json:"projects"`
 	Prompts         map[string]string `json:"prompts"`
+	OverwriteFilled bool              `json:"overwriteFilled"`
 }
 
 type APIData struct {
@@ -798,7 +801,7 @@ func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, 
 			isEmpty, _ := targetCell.Locator(".empty").Count()
 			cellText, _ := targetCell.InnerText()
 
-			if isEmpty > 0 || strings.TrimSpace(cellText) == "" || strings.TrimSpace(cellText) == "Empty" {
+			if isEmpty > 0 || strings.TrimSpace(cellText) == "" || strings.TrimSpace(cellText) == "Empty" || config.OverwriteFilled {
 				originalText, err := row.Locator(".base-cell-trans .highlight").First().InnerText()
 				if err != nil || originalText == "" {
 					originalText, _ = row.Locator(".base-cell-trans").InnerText()
@@ -1011,12 +1014,19 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 		if err != nil {
 			return errors.New("could not scroll to row: " + err.Error())
 		}
-		err = row.Locator("text=Empty").Click()
+		targetCell := row.Locator(fmt.Sprintf(".cell-trans[data-lang-id='%s']", config.TargetLangID))
+		err = targetCell.Click()
 		if err != nil {
 			return errors.New("could not click cell: " + err.Error())
 		}
 
 		time.Sleep(config.EditorLoadDelay)
+
+		// Очищаем поле (выделяем всё и удаляем)
+		page.Keyboard().Press("Meta+A")
+		page.Keyboard().Press("Control+A")
+		page.Keyboard().Press("Backspace")
+		time.Sleep(100 * time.Millisecond)
 
 		err = page.Keyboard().Type(item.Translation)
 		if err != nil {
