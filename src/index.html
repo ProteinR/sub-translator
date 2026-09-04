@@ -59,18 +59,10 @@
                 <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
                 Loka Translator Control Panel
             </h1>
-            <span id="app-version" class="text-xs bg-indigo-500 px-2 py-0.5 rounded-full font-mono font-medium tracking-wide"></span>
+            <span id="app-version" class="text-sm bg-white text-indigo-800 px-3 py-1 rounded-full font-mono font-bold tracking-wide" title="Версия запущенного приложения">Версия: загрузка…</span>
         </div>
         <div class="space-x-2 flex items-center">
-            <div class="flex items-center gap-2 mr-4 bg-indigo-700 px-3 py-1.5 rounded text-sm border border-indigo-500">
-                <span class="font-medium text-indigo-100">Direction:</span>
-                <label class="flex items-center gap-1 cursor-pointer hover:text-white">
-                    <input type="radio" name="translate_dir" value="PL" checked> EN to PL
-                </label>
-                <label class="flex items-center gap-1 cursor-pointer hover:text-white">
-                    <input type="radio" name="translate_dir" value="EN"> PL to EN
-                </label>
-            </div>
+            <span class="text-sm text-indigo-100">Языки определяются из страницы Lokalise</span>
             <label class="flex items-center gap-2 cursor-pointer text-sm font-medium mr-2 text-white hover:text-indigo-200" title="Внимание: Включите, чтобы перезаписать уже существующие переводы!">
                 <div class="relative">
                     <input type="checkbox" id="cfg_overwriteFilled" class="sr-only peer">
@@ -99,15 +91,8 @@
             <div class="bg-gray-50 p-3 rounded border flex flex-col">
                 <div class="flex justify-between items-center mb-2">
                     <h2 class="font-semibold text-gray-700">Gemini Prompt</h2>
-                    <div class="flex items-center gap-2">
-                        <label class="text-xs flex items-center gap-1 cursor-pointer font-medium text-gray-600">
-                            <input type="radio" name="prompt_lang" value="PL" checked> EN to PL
-                        </label>
-                        <label class="text-xs flex items-center gap-1 cursor-pointer font-medium text-gray-600">
-                            <input type="radio" name="prompt_lang" value="EN"> PL to EN
-                        </label>
-                    </div>
                 </div>
+                <p class="text-xs text-gray-500 mb-2">Общие правила перевода. Исходный язык и все целевые языки берутся из страницы; выбирать направление здесь не нужно.</p>
                 <textarea id="prompt" class="w-full h-48 min-h-[80px] max-h-[600px] border border-gray-300 rounded p-2 text-sm font-mono resize-y focus:ring focus:ring-indigo-200 focus:outline-none"></textarea>
             </div>
 
@@ -228,8 +213,6 @@
             terminal: document.getElementById('terminal'),
             btnClearLogs: document.getElementById('btnClearLogs'),
             toast: document.getElementById('toast'),
-            promptLangRadios: document.querySelectorAll('input[name="prompt_lang"]'),
-            translateDirRadios: document.querySelectorAll('input[name="translate_dir"]'),
             sidebar: document.getElementById('sidebar'),
             btnCollapseSidebar: document.getElementById('btnCollapseSidebar'),
             btnExpandSidebar: document.getElementById('btnExpandSidebar'),
@@ -367,24 +350,14 @@
                         }
                     });
 
-                    if(data.config.translateTo) {
-                        DOM.translateDirRadios.forEach(r => {
-                            r.checked = (r.value === data.config.translateTo);
-                        });
-                        DOM.promptLangRadios.forEach(r => {
-                            r.checked = (r.value === data.config.translateTo);
-                        });
-                        window.currentLang = data.config.translateTo;
-                    }
-                    
                     window.currentPrompts = data.config.prompts || {};
-                    DOM.prompt.value = window.currentPrompts[data.config.translateTo] || '';
-                    
+                    DOM.prompt.value = data.config.translationPrompt || '';
+
                     renderProjects((data.config.projects || []).join('\n'));
                 }
                 
                 if(data.version) {
-                    DOM.appVersion.textContent = `v${data.version}`;
+                    DOM.appVersion.textContent = `Версия ${data.version}`;
                 }
                 
                 updateUIState(data.isRunning);
@@ -417,13 +390,9 @@
                 }
             });
 
-            DOM.translateDirRadios.forEach(r => {
-                if(r.checked) config.translateTo = r.value;
-            });
-
             config.projects = getProjectList();
             config.prompts = window.currentPrompts || {};
-            config.prompts[window.currentLang] = DOM.prompt.value;
+            config.translationPrompt = DOM.prompt.value;
 
             const payload = { config };
 
@@ -522,34 +491,6 @@
             };
         }
 
-        async function fetchPromptForLang(lang) {
-            if (window.currentPrompts && window.currentPrompts[lang]) {
-                DOM.prompt.value = window.currentPrompts[lang];
-                return;
-            }
-            try {
-                const res = await fetch(`/api/prompt?lang=${lang}`);
-                const promptText = await res.text();
-                if (window.currentPrompts) window.currentPrompts[lang] = promptText;
-                DOM.prompt.value = promptText;
-            } catch(e) {
-                console.error("Failed to fetch prompt", e);
-                showToast("Failed to fetch prompt", true);
-            }
-        }
-function handleLangChange() {
-    let lang = 'PL';
-    let oldLang = window.currentLang;
-    DOM.promptLangRadios.forEach(r => { if(r.checked) lang = r.value; });
-
-    if (oldLang && window.currentPrompts) {
-        window.currentPrompts[oldLang] = DOM.prompt.value;
-    }
-    window.currentLang = lang;
-    fetchPromptForLang(lang);
-    autoSave();
-}
-
         // Event Listeners
         DOM.cfgInputs.forEach(input => {
             input.addEventListener('input', autoSave);
@@ -558,8 +499,6 @@ function handleLangChange() {
         DOM.prompt.addEventListener('input', autoSave);
         DOM.btnStart.addEventListener('click', startTask);
         DOM.btnStop.addEventListener('click', stopTask);
-        DOM.promptLangRadios.forEach(r => r.addEventListener('change', handleLangChange));
-        DOM.translateDirRadios.forEach(r => r.addEventListener('change', autoSave));
 
         // Sidebar logic
         function toggleSidebar() {
