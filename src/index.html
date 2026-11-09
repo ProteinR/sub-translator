@@ -105,7 +105,11 @@
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">MODEL</label>
-                        <input type="text" id="cfg_model" class="w-full border rounded p-1.5 text-sm" placeholder="claude-haiku-5-5">
+                        <select id="cfg_model" class="w-full border rounded p-1.5 text-sm bg-white">
+                            <option value="claude-haiku-5-5" selected>Claude Haiku 5.5 — быстрая и дешёвая (по умолчанию)</option>
+                            <option value="claude-sonnet-5-5">Claude Sonnet 5.5 — точнее стиль и грамматика</option>
+                            <option value="claude-opus-5-5">Claude Opus 5.5 — максимум качества, дорого</option>
+                        </select>
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">MAX_CONCURRENCY</label>
@@ -196,7 +200,7 @@
 
     <script>
         const DOM = {
-            cfgInputs: document.querySelectorAll('input[id^="cfg_"]'),
+            cfgInputs: document.querySelectorAll('input[id^="cfg_"], select[id^="cfg_"]'),
             projectsContainer: document.getElementById('projects-container'),
             projectsCount: document.getElementById('projects-count'),
             prompt: document.getElementById('prompt'),
@@ -218,6 +222,19 @@
         // Если конфиг не загрузился, автосейв не должен перетереть файл пустыми полями.
         let configLoaded = false;
         const API_HEADERS = {'X-Loka-Request': '1'};
+
+        // Модель, которой нет в списке (вписана руками в config.json), не теряем —
+        // добавляем её отдельным пунктом.
+        function setSelectValue(select, value) {
+            if (!value) return;
+            if (!Array.from(select.options).some(o => o.value === value)) {
+                const opt = document.createElement('option');
+                opt.value = value;
+                opt.textContent = value + ' (из config.json)';
+                select.appendChild(opt);
+            }
+            select.value = value;
+        }
 
         function createProjectInput(value = "") {
             const wrap = document.createElement('div');
@@ -340,6 +357,8 @@
                         if(data.config[key] !== undefined) {
                             if (input.type === 'checkbox') {
                                 input.checked = data.config[key];
+                            } else if (input.tagName === 'SELECT') {
+                                setSelectValue(input, data.config[key]);
                             } else {
                                 input.value = data.config[key];
                             }
