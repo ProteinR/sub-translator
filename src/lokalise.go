@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,7 +81,7 @@ func ensureLogin(ctx context.Context, browser playwright.Browser, checkURL strin
 }
 
 type translationJob struct {
-	cfg   Config
+	group string // документ + исходный язык: внутри группы тянем контекст
 	items []TranslationItem
 }
 
@@ -89,6 +90,12 @@ type jobResult struct {
 	items []TranslationItem
 	err   error
 }
+
+// Сколько предыдущих строк отдавать модели как контекст.
+const (
+	contextRows     = 3
+	contextMaxRunes = 400
+)
 
 func processProject(ctx context.Context, page playwright.Page, projectURL string, config Config, tr translator) (string, error) {
 	parsedURL, err := url.Parse(projectURL)
@@ -118,7 +125,7 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 		return filename, nil
 	}
 
-	jobs := buildJobs(collected, config)
+	jobs := buildJobs(collected)
 
 	// Конвейер: пока браузер вставляет пачку N, модель уже переводит пачку N+1.
 	pctx, cancel := context.WithCancel(ctx)
@@ -130,7 +137,7 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 		if res.err != nil {
 			return filename, fmt.Errorf("translation error: %w", res.err)
 		}
-		f, err := fillTranslations(ctx, page, res.items, res.job.cfg)
+		f, err := fillTranslations(ctx, page, res.items, config)
 		failed = append(failed, f...)
 		if err != nil {
 			return filename, err
@@ -142,41 +149,47 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 	return filename, nil
 }
 
-// buildJobs группирует строки по документу и направлению, сохраняя порядок строк.
-func buildJobs(items []TranslationItem, config Config) []translationJob {
+// buildJobs группирует ячейки по документу и исходному языку (все целевые языки
+// строки — в одном запросе), сохраняя порядок строк, и режет на пачки.
+func buildJobs(items []TranslationItem) []translationJob {
 	var groups [][]TranslationItem
+	var groupKeys []string
 	index := map[string]int{}
 	for _, item := range items {
-		key := item.Filename + "\x00" + item.SourceLang + "\x00" + item.TargetID
+		key := item.Filename + "\x00" + item.SourceLang
 		i, ok := index[key]
 		if !ok {
 			i = len(groups)
 			index[key] = i
 			groups = append(groups, nil)
+			groupKeys = append(groupKeys, key)
 		}
 		groups[i] = append(groups[i], item)
 	}
 
 	var jobs []translationJob
-	for _, group := range groups {
-		cfg := config
-		cfg.SourceLang = group[0].SourceLang
-		cfg.TranslateToLang = group[0].TargetLang
-		cfg.TargetLangID = group[0].TargetID
-		slog.Info("🌍 Определено направление", "source", cfg.SourceLang, "target", cfg.TranslateToLang, "file", group[0].Filename, "rows", len(group))
-		for _, batch := range splitBatches(group, maxBatchChars, maxBatchItems) {
-			jobs = append(jobs, translationJob{cfg: cfg, items: batch})
+	for gi, group := range groups {
+		slog.Info("🌍 Определено направление", "source", group[0].SourceLang, "targets", targetsOf(group), "file", group[0].Filename, "cells", len(group))
+		for _, batch := range splitBatches(group, maxBatchChars, maxBatchRows) {
+			jobs = append(jobs, translationJob{group: groupKeys[gi], items: batch})
 		}
 	}
 	return jobs
 }
 
+// runTranslationPipeline переводит пачки по очереди в фоне (буфер 1: модель
+// работает над следующей пачкой, пока браузер вставляет текущую) и подкладывает
+// в каждый запрос последние строки предыдущей пачки той же группы.
 func runTranslationPipeline(ctx context.Context, tr translator, jobs []translationJob) <-chan jobResult {
 	out := make(chan jobResult, 1)
 	go func() {
 		defer close(out)
+		lastRows := map[string][]contextRow{}
 		for _, job := range jobs {
-			items, err := tr.Translate(ctx, job.items, job.cfg)
+			items, err := tr.Translate(ctx, translateRequest{Items: job.items, Context: lastRows[job.group]})
+			if err == nil {
+				lastRows[job.group] = contextFrom(items, contextRows)
+			}
 			select {
 			case out <- jobResult{job: job, items: items, err: err}:
 			case <-ctx.Done():
@@ -188,6 +201,23 @@ func runTranslationPipeline(ctx context.Context, tr translator, jobs []translati
 		}
 	}()
 	return out
+}
+
+// contextFrom берёт последние n строк пачки со всеми их переводами.
+func contextFrom(items []TranslationItem, n int) []contextRow {
+	var rows []contextRow
+	for i := len(items) - 1; i >= 0 && len(rows) < n; {
+		j := i
+		row := contextRow{Text: truncate(items[i].Original, contextMaxRunes), Translations: map[string]string{}}
+		for j >= 0 && items[j].ID == items[i].ID {
+			row.Translations[items[j].TargetLang] = truncate(items[j].Translation, contextMaxRunes)
+			j--
+		}
+		rows = append(rows, row)
+		i = j
+	}
+	slices.Reverse(rows)
+	return rows
 }
 
 func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, filename string) ([]TranslationItem, error) {
@@ -244,13 +274,18 @@ func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, 
 			}
 			rowFile, _ := row.GetAttribute("data-filename")
 			seenLanguages := map[string]bool{}
+			seenNames := map[string]bool{}
 			for _, target := range targets {
 				targetID, _ := target.GetAttribute("data-lang-id")
 				targetName, _ := target.GetAttribute("data-lang")
 				if _, err := strconv.ParseUint(targetID, 10, 64); err != nil || targetName == "" || targetID == sourceID || seenLanguages[targetID] {
 					return nil, fmt.Errorf("строка %s: некорректные данные целевого языка", id)
 				}
+				if seenNames[targetName] {
+					return nil, fmt.Errorf("строка %s: два целевых языка с одинаковым названием %q", id, targetName)
+				}
 				seenLanguages[targetID] = true
+				seenNames[targetName] = true
 				cellText, err := cellValue(target)
 				if err != nil {
 					return nil, err
@@ -298,7 +333,7 @@ func scrollToTop(ctx context.Context, page playwright.Page) error {
 // возвращаются списком, а проект остаётся в очереди для повторного прогона.
 // Ошибка возвращается только при отмене или если страница явно сломалась.
 func fillTranslations(ctx context.Context, page playwright.Page, items []TranslationItem, config Config) ([]string, error) {
-	slog.Info("✍️ Вставка переводов...", "rows", len(items), "lang", config.TranslateToLang)
+	slog.Info("✍️ Вставка переводов...", "cells", len(items), "langs", targetsOf(items))
 	if err := scrollToTop(ctx, page); err != nil {
 		return nil, err
 	}
@@ -317,11 +352,11 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return failed, err
 			}
-			slog.Warn("⚠️ Строка не вставилась", "id", item.ID, "lang", config.TranslateToLang, "attempt", attempt+1, "error", err)
+			slog.Warn("⚠️ Строка не вставилась", "id", item.ID, "lang", item.TargetLang, "attempt", attempt+1, "error", err)
 			_ = page.Keyboard().Press("Escape") // закрываем возможный зависший редактор
 		}
 		if err != nil {
-			failed = append(failed, item.ID+"/"+config.TranslateToLang)
+			failed = append(failed, item.ID+"/"+item.TargetLang)
 			consecutive++
 			if consecutive >= maxConsecutiveRowFailures {
 				return failed, fmt.Errorf("%d строк подряд не вставились, похоже страница сломалась; последняя ошибка: %w", consecutive, err)
@@ -341,7 +376,7 @@ func fillRow(ctx context.Context, page playwright.Page, item TranslationItem, co
 	if err := row.ScrollIntoViewIfNeeded(); err != nil {
 		return fmt.Errorf("could not scroll to row: %w", err)
 	}
-	targetCell := row.Locator(targetCellSelector(config.TargetLangID))
+	targetCell := row.Locator(targetCellSelector(item.TargetID))
 
 	// На повторной попытке ячейка может содержать наш же кривой текст — перезаписываем.
 	if attempt == 0 && !config.OverwriteFilled {
@@ -420,7 +455,7 @@ func fillRow(ctx context.Context, page playwright.Page, item TranslationItem, co
 		return fmt.Errorf("не прочитано сохранённое значение: %w", err)
 	}
 	if normalizeText(saved) != normalizeText(item.Translation) {
-		return fmt.Errorf("не подтверждено сохранение строки %s (%s)", item.ID, config.TranslateToLang)
+		return fmt.Errorf("не подтверждено сохранение строки %s (%s)", item.ID, item.TargetLang)
 	}
 	return sleepCtx(ctx, config.RowNextDelay)
 }

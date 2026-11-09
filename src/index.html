@@ -60,6 +60,7 @@
                 Loka Translator Control Panel
             </h1>
             <span id="app-version" class="text-sm bg-white text-indigo-800 px-3 py-1 rounded-full font-mono font-bold tracking-wide" title="Версия запущенного приложения">Версия: загрузка…</span>
+            <span id="usage" class="text-xs bg-indigo-800 text-indigo-100 px-3 py-1 rounded-full font-mono hidden" title="Расход текущего/последнего прогона"></span>
         </div>
         <div class="space-x-2 flex items-center">
             <span class="text-sm text-indigo-100">Языки определяются из страницы Lokalise</span>
@@ -111,6 +112,19 @@
                             <option value="claude-sonnet-5-5">Claude Sonnet 5.5 — точнее стиль и грамматика</option>
                             <option value="claude-opus-5-5">Claude Opus 5.5 — максимум качества, дорого</option>
                         </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500">FALLBACK_MODEL</label>
+                        <select id="cfg_fallbackModel" class="w-full border rounded p-1.5 text-sm bg-white" title="Подключается для пачки, если основная модель перегружена или дважды ответила некорректно">
+                            <option value="claude-sonnet-5-5" selected>Claude Sonnet 5.5 (по умолчанию)</option>
+                            <option value="claude-opus-5-5">Claude Opus 5.5</option>
+                            <option value="claude-haiku-5-5">Claude Haiku 5.5</option>
+                            <option value="none">Без запасной модели</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500">BUDGET_PER_RUN, $ (0 — без лимита)</label>
+                        <input type="number" id="cfg_budgetUsd" data-float="1" step="0.01" min="0" class="w-full border rounded p-1.5 text-sm" placeholder="0">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">MAX_CONCURRENCY</label>
@@ -216,6 +230,7 @@
             btnExpandSidebar: document.getElementById('btnExpandSidebar'),
             rightTerminal: document.getElementById('right-terminal'),
             appVersion: document.getElementById('app-version'),
+            usage: document.getElementById('usage'),
             newProjectInput: document.getElementById('new-project-input'),
             btnAddProject: document.getElementById('btn-add-project')
         };
@@ -408,7 +423,9 @@
             DOM.cfgInputs.forEach(input => {
                 const key = input.id.replace('cfg_', '');
                 if (input.type === 'number') {
-                    config[key] = parseInt(input.value, 10) || 0;
+                    config[key] = input.dataset.float
+                        ? (parseFloat(input.value) || 0)
+                        : (parseInt(input.value, 10) || 0);
                 } else if (input.type === 'checkbox') {
                     config[key] = input.checked;
                 } else {
@@ -487,12 +504,28 @@
             }
         }
 
+        function fmtTokens(n) {
+            return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+        }
+
+        function renderUsage(u) {
+            const cost = '~$' + u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2) + (u.costIncomplete ? '+' : '');
+            const budget = u.budgetUsd > 0 ? ' / $' + u.budgetUsd.toFixed(2) : '';
+            DOM.usage.textContent = `💰 ${cost}${budget} · in ${fmtTokens(u.inputTokens)} · out ${fmtTokens(u.outputTokens)}`
+                + (u.cacheRead ? ` · кэш ${fmtTokens(u.cacheRead)}` : '')
+                + ` · память ${u.memoryHits} · запросов ${u.requests}`;
+            DOM.usage.classList.toggle('bg-red-600', u.budgetUsd > 0 && u.costUsd >= u.budgetUsd);
+            DOM.usage.classList.remove('hidden');
+        }
+
         // SSE For Logs
         function connectLogs() {
             const evtSource = new EventSource('/api/logs');
             evtSource.onmessage = function(event) {
                 // Check for special control messages from server
-                if (event.data === "___PROCESS_STARTED___") {
+                if (event.data.startsWith("___USAGE___|")) {
+                    renderUsage(JSON.parse(event.data.slice("___USAGE___|".length)));
+                } else if (event.data === "___PROCESS_STARTED___") {
                     updateUIState(true);
                 } else if (event.data === "___PROCESS_STOPPED___") {
                     updateUIState(false);

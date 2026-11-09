@@ -12,7 +12,11 @@ import (
 	"time"
 )
 
-const defaultModel = "claude-haiku-5-5"
+const (
+	defaultModel         = "claude-haiku-5-5"
+	defaultFallbackModel = "claude-sonnet-5-5"
+	noFallbackModel      = "none"
+)
 
 const defaultTranslationPrompt = `You are a professional subtitle and script localizer for an online learning platform: business and personal-development coaching, guided meditations, sports and fitness lessons, psychology podcasts. Viewers read your text while listening to the speaker, so it must sound like natural spoken language, not like a translation.
 
@@ -47,6 +51,8 @@ Preserve line breaks, paragraph breaks, placeholders, tags and timing markers ex
 type FileConfig struct {
 	AnthropicAPIKey   string   `json:"anthropicApiKey"`
 	Model             string   `json:"model"`
+	FallbackModel     string   `json:"fallbackModel"` // "none" — без запасной модели
+	BudgetUSD         float64  `json:"budgetUsd"`     // 0 — без лимита
 	MaxConcurrency    int      `json:"maxConcurrency"`
 	TranslationPrompt string   `json:"translationPrompt"`
 	TgBotToken        string   `json:"tgBotToken"`
@@ -63,6 +69,8 @@ type FileConfig struct {
 type Config struct {
 	APIKey          string
 	Model           string
+	FallbackModel   string // "" — без запасной модели
+	BudgetUSD       float64
 	MaxConcurrency  int
 	Prompt          string
 	TgBotToken      string
@@ -73,16 +81,12 @@ type Config struct {
 	RowNextDelay    time.Duration
 	Projects        []string
 	OverwriteFilled bool
-
-	// Заполняются для каждой группы строк по данным страницы.
-	SourceLang      string
-	TranslateToLang string
-	TargetLangID    string
 }
 
 func defaultConfig() FileConfig {
 	return FileConfig{
 		Model:             defaultModel,
+		FallbackModel:     defaultFallbackModel,
 		MaxConcurrency:    1,
 		TranslationPrompt: defaultTranslationPrompt,
 		ScrollDelay:       2000,
@@ -99,6 +103,13 @@ func normalizeConfig(cfg *FileConfig) {
 	// Старые конфиги были на Gemini — такая модель в Anthropic API не существует.
 	if cfg.Model == "" || strings.HasPrefix(strings.ToLower(cfg.Model), "gemini") {
 		cfg.Model = defaultModel
+	}
+	cfg.FallbackModel = strings.TrimSpace(cfg.FallbackModel)
+	if cfg.FallbackModel == "" || strings.HasPrefix(strings.ToLower(cfg.FallbackModel), "gemini") {
+		cfg.FallbackModel = defaultFallbackModel
+	}
+	if cfg.BudgetUSD < 0 {
+		cfg.BudgetUSD = 0
 	}
 	if strings.TrimSpace(cfg.TranslationPrompt) == "" {
 		cfg.TranslationPrompt = defaultTranslationPrompt
@@ -131,10 +142,16 @@ func toInternalConfig(fc FileConfig) Config {
 	if key == "" {
 		key = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 	}
+	fallback := fc.FallbackModel
+	if fallback == noFallbackModel || fallback == fc.Model {
+		fallback = ""
+	}
 	ms := func(v int) time.Duration { return time.Duration(v) * time.Millisecond }
 	return Config{
 		APIKey:          key,
 		Model:           fc.Model,
+		FallbackModel:   fallback,
+		BudgetUSD:       fc.BudgetUSD,
 		MaxConcurrency:  fc.MaxConcurrency,
 		Prompt:          fc.TranslationPrompt,
 		TgBotToken:      strings.TrimSpace(fc.TgBotToken),

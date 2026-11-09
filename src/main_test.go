@@ -8,16 +8,29 @@ import (
 	"github.com/playwright-community/playwright-go"
 )
 
-func TestValidateTranslations(t *testing.T) {
-	input := []TranslationItem{{ID: "1", Original: "First"}, {ID: "2", Original: "Second"}}
-	valid := []TranslationItem{{ID: "2", Translation: "Drugi"}, {ID: "1", Translation: "Pierwszy"}}
-	got, err := validateTranslations(input, valid)
-	if err != nil || got[0].ID != "1" || got[0].Original != "First" {
-		t.Fatalf("ordering/source lost: %v %v", got, err)
+func TestCheckTranslation(t *testing.T) {
+	ok := []struct{ src, tr string }{
+		{"Hello, {name}! Click <b>here</b>.", "Cześć, {name}! Kliknij <b>tutaj</b>."},
+		{"Discount 50% for %s", "Zniżka 50% dla %s"},
+		{"Line one\n\nLine two", "Linia jeden\n\nLinia druga"},
+		{"OK", "OK"}, // короткие строки могут совпадать
 	}
-	for _, bad := range [][]TranslationItem{nil, valid[:1], {{ID: "3", Translation: "x"}}, {{ID: "1", Translation: "x"}, {ID: "1", Translation: "y"}}, {{ID: "1", Translation: " "}, {ID: "2", Translation: "x"}}} {
-		if _, err := validateTranslations(input, bad); err == nil {
-			t.Errorf("accepted incomplete/invalid response: %v", bad)
+	for _, c := range ok {
+		if err := checkTranslation(c.src, c.tr); err != nil {
+			t.Errorf("%q → %q rejected: %v", c.src, c.tr, err)
+		}
+	}
+	bad := []struct{ src, tr string }{
+		{"Hello, {name}", "Cześć"},
+		{"Click <b>here</b>", "Kliknij tutaj"},
+		{"Para one\n\nPara two", "Akapit jeden akapit dwa"},
+		{"This is a fairly long sentence to translate.", "Tak."},
+		{"This sentence stays in English and was not translated at all.", "This sentence stays in English and was not translated at all."},
+		{"Hi", "  "},
+	}
+	for _, c := range bad {
+		if err := checkTranslation(c.src, c.tr); err == nil {
+			t.Errorf("%q → %q accepted", c.src, c.tr)
 		}
 	}
 }

@@ -14,7 +14,7 @@ import (
 //go:embed index.html
 var indexHTML []byte
 
-const AppVersion = "2.0.0"
+const AppVersion = "2.1.0"
 
 const defaultPort = "8080"
 

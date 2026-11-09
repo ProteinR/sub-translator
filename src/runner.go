@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"log/slog"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"sync"
@@ -14,7 +16,12 @@ import (
 	"gopkg.in/telebot.v4"
 )
 
-func (a *app) runTranslation(ctx context.Context) {
+func (a *app) runTranslation(parent context.Context) {
+	// Свой cancel: при исчерпании бюджета останавливаем весь прогон, а не каждый
+	// проект по отдельности с потоком одинаковых ошибок в Telegram.
+	ctx, stopRun := context.WithCancelCause(parent)
+	defer stopRun(nil)
+
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("💥 Паника в процессе перевода", "panic", r, "stack", string(debug.Stack()))
@@ -48,8 +55,40 @@ func (a *app) runTranslation(ctx context.Context) {
 		return
 	}
 
-	tr := newAnthropicClient(config.APIKey, config.Model)
 	notify := newNotifier(config.TgBotToken, config.ChatId)
+
+	usage := newUsageTracker(config.BudgetUSD, func(s usageSnapshot) {
+		if data, err := json.Marshal(s); err == nil {
+			a.broker.BroadcastControl("___USAGE___|" + string(data))
+		}
+	})
+	usage.notify(usage.Snapshot()) // обнуляем счётчик в UI
+	defer func() {
+		s := usage.Snapshot()
+		slog.Info("💰 Итог прогона", "requests", s.Requests, "in_tokens", s.InputTokens, "out_tokens", s.OutputTokens,
+			"cache_read", s.CacheRead, "from_memory", s.MemoryHits, "cost_usd", fmt.Sprintf("%.4f", s.CostUSD))
+	}()
+
+	memory, err := openTranslationMemory(filepath.Join("data", "tm.jsonl"))
+	if err != nil {
+		slog.Error("❌ Не удалось открыть память переводов", "error", err)
+		return
+	}
+	defer memory.Close()
+	slog.Info("🧠 Память переводов загружена", "entries", memory.Len())
+
+	tr := &cachedTranslator{
+		inner: newAnthropicClient(config.APIKey, config.Model, config.FallbackModel, config.Prompt, usage),
+		tm:    memory,
+		scope: memoryScope(config.Model, config.Prompt),
+		usage: usage,
+	}
+	if config.FallbackModel != "" {
+		slog.Info("🔀 Запасная модель", "model", config.FallbackModel)
+	}
+	if config.BudgetUSD > 0 {
+		slog.Info("💰 Лимит бюджета на прогон", "usd", config.BudgetUSD)
+	}
 
 	pw, err := playwright.Run()
 	if err != nil {
@@ -98,6 +137,7 @@ func (a *app) runTranslation(ctx context.Context) {
 	}
 
 	var wg sync.WaitGroup
+	var budgetOnce sync.Once
 loop:
 	for _, projectURL := range config.Projects {
 		var page playwright.Page
@@ -121,6 +161,14 @@ loop:
 			slog.Info(fmt.Sprintf("🚀 Старт обработки (Режим: %s)", modeText), "url", projectURL)
 			filename, err := processProject(ctx, p, projectURL, config, tr)
 			if err != nil {
+				if errors.Is(err, errBudgetExceeded) {
+					budgetOnce.Do(func() {
+						slog.Error("🛑 "+err.Error()+" — останавливаю прогон", "url", projectURL)
+						notify.Send(html.EscapeString("🛑 " + err.Error() + ". Прогон остановлен, проекты остались в очереди."))
+						stopRun(err)
+					})
+					return
+				}
 				if errors.Is(err, context.Canceled) {
 					slog.Warn("⚠️ Остановлено", "url", projectURL)
 					return
