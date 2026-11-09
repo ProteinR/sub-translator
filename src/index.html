@@ -91,6 +91,7 @@
             <div class="bg-gray-50 p-3 rounded border flex flex-col">
                 <div class="flex justify-between items-center mb-2">
                     <h2 class="font-semibold text-gray-700">Translation Prompt</h2>
+                    <button id="btnResetPrompt" class="text-xs text-indigo-600 hover:text-indigo-800 hover:underline transition" title="Заменить текущий промпт рекомендованным">Сбросить на дефолтный</button>
                 </div>
                 <p class="text-xs text-gray-500 mb-2">Общие правила перевода. Исходный язык и все целевые языки берутся из страницы; выбирать направление здесь не нужно.</p>
                 <textarea id="prompt" class="w-full h-48 min-h-[80px] max-h-[600px] border border-gray-300 rounded p-2 text-sm font-mono resize-y focus:ring focus:ring-indigo-200 focus:outline-none"></textarea>
@@ -204,6 +205,7 @@
             projectsContainer: document.getElementById('projects-container'),
             projectsCount: document.getElementById('projects-count'),
             prompt: document.getElementById('prompt'),
+            btnResetPrompt: document.getElementById('btnResetPrompt'),
             btnStart: document.getElementById('btnStart'),
             btnStop: document.getElementById('btnStop'),
             terminal: document.getElementById('terminal'),
@@ -221,6 +223,7 @@
         let isRunning = false;
         // Если конфиг не загрузился, автосейв не должен перетереть файл пустыми полями.
         let configLoaded = false;
+        let defaultPrompt = '';
         const API_HEADERS = {'X-Loka-Request': '1'};
 
         // Модель, которой нет в списке (вписана руками в config.json), не теряем —
@@ -370,6 +373,8 @@
                     renderProjects((data.config.projects || []).join('\n'));
                 }
                 
+                defaultPrompt = data.defaultPrompt || '';
+
                 if(data.version) {
                     DOM.appVersion.textContent = `Версия ${data.version}`;
                 }
@@ -517,6 +522,25 @@
             input.addEventListener('change', autoSave);
         });
         DOM.prompt.addEventListener('input', autoSave);
+        DOM.btnResetPrompt.addEventListener('click', async () => {
+            if (!defaultPrompt) {
+                showToast("Дефолтный промпт не загружен", true);
+                return;
+            }
+            if (DOM.prompt.value.trim() === defaultPrompt.trim()) {
+                showToast("Уже стоит дефолтный промпт");
+                return;
+            }
+            if (!confirm("Заменить текущий промпт дефолтным? Старый текст будет потерян.")) return;
+            DOM.prompt.value = defaultPrompt;
+            try {
+                await saveData(true);
+                showToast("Промпт сброшен на дефолтный");
+                appendLog("✅ Промпт сброшен на дефолтный.");
+            } catch (e) {
+                showToast("Не удалось сохранить промпт", true);
+            }
+        });
         DOM.btnStart.addEventListener('click', startTask);
         DOM.btnStop.addEventListener('click', stopTask);
 

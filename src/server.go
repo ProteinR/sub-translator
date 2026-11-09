@@ -28,6 +28,8 @@ type APIData struct {
 	Config    FileConfig `json:"config"`
 	IsRunning bool       `json:"isRunning"`
 	Version   string     `json:"version"`
+	// Только для чтения: UI берёт отсюда текст для кнопки «Сбросить на дефолтный».
+	DefaultPrompt string `json:"defaultPrompt,omitempty"`
 }
 
 func newApp(cfg *configStore, broker *SSEBroker, port string) *app {
@@ -104,7 +106,7 @@ func (a *app) handleGetData(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(APIData{Config: cfg, IsRunning: a.isRunning(), Version: AppVersion})
+	_ = json.NewEncoder(w).Encode(APIData{Config: cfg, IsRunning: a.isRunning(), Version: AppVersion, DefaultPrompt: defaultTranslationPrompt})
 }
 
 func (a *app) handleSaveData(w http.ResponseWriter, r *http.Request) {
