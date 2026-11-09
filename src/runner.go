@@ -54,6 +54,7 @@ func (a *app) runTranslation(parent context.Context) {
 		slog.Warn("⚠️ Список проектов пуст.")
 		return
 	}
+	a.resetStatuses(config.Projects)
 
 	notify := newNotifier(config.TgBotToken, config.ChatId)
 
@@ -159,9 +160,11 @@ loop:
 			}()
 
 			slog.Info(fmt.Sprintf("🚀 Старт обработки (Режим: %s)", modeText), "url", projectURL)
-			filename, err := processProject(ctx, p, projectURL, config, tr)
+			rep := &projectReporter{st: projectStatus{URL: projectURL, Status: statusRunning}, emit: a.setStatus}
+			filename, err := processProject(ctx, p, projectURL, config, tr, rep)
 			if err != nil {
 				if errors.Is(err, errBudgetExceeded) {
+					rep.update(func(s *projectStatus) { s.Status = statusPending; s.Detail = humanizeError(err) })
 					budgetOnce.Do(func() {
 						slog.Error("🛑 "+err.Error()+" — останавливаю прогон", "url", projectURL)
 						notify.Send(html.EscapeString("🛑 " + err.Error() + ". Прогон остановлен, проекты остались в очереди."))
@@ -171,9 +174,17 @@ loop:
 				}
 				if errors.Is(err, context.Canceled) {
 					slog.Warn("⚠️ Остановлено", "url", projectURL)
+					rep.update(func(s *projectStatus) {
+						s.Status = statusPending
+						s.Detail = "Остановлено — продолжится при следующем запуске"
+						if errors.Is(context.Cause(ctx), errBudgetExceeded) {
+							s.Detail = humanizeError(errBudgetExceeded)
+						}
+					})
 					return
 				}
 				slog.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
+				rep.update(func(s *projectStatus) { s.Status = statusError; s.Detail = humanizeError(err) })
 				notify.Send(projectMessage(false, projectURL, filename, err))
 				return
 			}
@@ -181,7 +192,12 @@ loop:
 			if err := a.cfg.RemoveProject(projectURL); err != nil {
 				slog.Warn("⚠️ Ошибка при удалении из очереди", "url", projectURL, "error", err)
 			}
-			a.broker.BroadcastControl("___PROJECT_COMPLETED___|" + projectURL)
+			rep.update(func(s *projectStatus) {
+				s.Status = statusDone
+				if s.Total > 0 {
+					s.Detail = fmt.Sprintf("Готово · %d ячеек", s.Total)
+				}
+			})
 			slog.Info("✅ Завершено", "url", projectURL)
 			notify.Send(projectMessage(true, projectURL, filename, nil))
 		}(projectURL, page)

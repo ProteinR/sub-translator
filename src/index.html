@@ -1,611 +1,810 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Loka Translator - Web UI</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        /* Custom scrollbar for terminal */
-        #terminal::-webkit-scrollbar {
-            width: 8px;
-        }
-        #terminal::-webkit-scrollbar-track {
-            background: #1f2937;
-        }
-        #terminal::-webkit-scrollbar-thumb {
-            background: #4b5563;
-            border-radius: 4px;
-        }
-        #terminal::-webkit-scrollbar-thumb:hover {
-            background: #6b7280;
-        }
-        .spinner {
-            border: 3px solid rgba(255,255,255,.3);
-            border-radius: 50%;
-            border-top-color: #fff;
-            width: 20px;
-            height: 20px;
-            animation: spin 1s ease-in-out infinite;
-            display: inline-block;
-            vertical-align: middle;
-            margin-right: 8px;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        #sidebar {
-            border-right-width: 2px;
-            border-right-color: #e5e7eb;
-        }
-        #sidebar:has(#btnCollapseSidebar:hover) {
-            border-right-color: #6366f1;
-        }
-        #sidebar.collapsed {
-            width: 0 !important;
-            padding-left: 0;
-            padding-right: 0;
-            border-right: none;
-            opacity: 0;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loka Translator</title>
+<style>
+  :root {
+    --bg: #F6F6F4; --card: #FFFFFF; --line: #E4E4E7; --line-soft: #F4F4F5;
+    --ink: #18181B; --ink-2: #3F3F46; --muted: #52525B; --faint: #71717A;
+    --accent: #1D4ED8; --accent-ink: #1E3A8A;
+    --run-bg: #DBEAFE; --run-fg: #1E40AF; --bar: #2563EB;
+    --wait-bg: #F4F4F5; --wait-fg: #3F3F46;
+    --err-bg: #FEE2E2; --err-fg: #991B1B; --err: #B91C1C;
+    --ok-bg: #DCFCE7; --ok-fg: #166534;
+    --warn-bg: #FFF7ED; --warn-line: #FDBA74; --warn-fg: #9A3412; --warn-strong: #C2410C; --warn-text: #B45309;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+  a { color: var(--accent); }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  .top { background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .top-inner { max-width: 1040px; margin: 0 auto; padding: 12px 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; flex-grow: 1; }
+  .brand b { font-size: 18px; letter-spacing: -0.01em; }
+  .version { font: 12px var(--mono); color: var(--muted); }
+  .usage { display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--ink-2); background: var(--line-soft); border-radius: 999px; padding: 6px 12px; }
+  .usage strong { color: var(--ink); }
+  .usage.over { background: var(--err-bg); color: var(--err-fg); }
+  .usage .dot { color: #A1A1AA; }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+  .wrap.narrow { max-width: 760px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
+  .pad { padding: 20px 22px; }
+  h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .sub { margin: 4px 0 0; font-size: 14px; color: var(--muted); }
+  .hint { font-size: 13px; color: var(--muted); }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid #D4D4D8; background: var(--card); font-weight: 500; cursor: pointer; text-decoration: none; color: #27272A; white-space: nowrap; }
+  .btn:hover { background: #FAFAFA; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary { min-height: 48px; padding: 0 22px; border-radius: 12px; border: none; background: var(--accent); color: #FFF; font-weight: 600; }
+  .btn-primary:hover { background: var(--accent-ink); }
+  .btn-primary:disabled { background: #93A3C4; opacity: 1; }
+  .btn-stop { min-height: 48px; padding: 0 22px; border-radius: 12px; border: 1px solid var(--err); color: var(--err); font-weight: 600; }
+  .btn-outline { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .btn-link { border: none; background: transparent; color: var(--accent); font-size: 13px; min-height: 36px; padding: 0 8px; }
+  .btn-link:hover { background: transparent; text-decoration: underline; }
+  .icon-btn { width: 44px; height: 44px; border: none; background: transparent; color: var(--faint); border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+  .icon-btn:hover:not(:disabled) { background: var(--line-soft); color: var(--ink); }
+  .icon-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+  .banner { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 12px; padding: 14px 18px; }
+  .banner .t { font-weight: 600; color: #7C2D12; }
+  .banner .d { font-size: 14px; color: var(--warn-fg); }
+  .banner .btn { background: var(--warn-strong); border: none; color: #FFF; font-weight: 600; }
+
+  .run { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; }
+  .run-text { flex: 1 1 360px; }
+  .run-text h2 { font-size: 18px; }
+  .check { display: flex; align-items: center; gap: 10px; cursor: pointer; min-height: 44px; }
+  .check input { width: 18px; height: 18px; accent-color: var(--warn-text); }
+  .check .t { font-weight: 500; display: block; }
+  .check .d { font-size: 12px; color: var(--muted); display: block; }
+  .check .d.warn { color: var(--warn-text); }
+
+  .q-head { padding: 16px 22px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; border-bottom: 1px solid var(--line-soft); }
+  .q-head h2 { flex-grow: 1; }
+  .q-add { padding: 14px 22px; display: flex; flex-wrap: wrap; gap: 10px; border-bottom: 1px solid var(--line-soft); background: #FAFAFA; }
+  .q-add input { flex: 1 1 420px; min-height: 44px; border: 1px solid #D4D4D8; border-radius: 10px; padding: 0 14px; font-size: 14px; background: var(--card); }
+  .q-add .hint { flex-basis: 100%; }
+  .q-empty { padding: 36px 22px; text-align: center; color: var(--muted); font-size: 14px; }
+  .q-list { list-style: none; margin: 0; padding: 0; }
+  .q-item { display: flex; align-items: flex-start; gap: 14px; padding: 14px 22px; border-bottom: 1px solid var(--line-soft); }
+  .q-item:last-child { border-bottom: none; }
+  .badge { flex: 0 0 auto; margin-top: 2px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; min-width: 88px; text-align: center; }
+  .badge.running { background: var(--run-bg); color: var(--run-fg); }
+  .badge.pending { background: var(--wait-bg); color: var(--wait-fg); }
+  .badge.error { background: var(--err-bg); color: var(--err-fg); }
+  .badge.done { background: var(--ok-bg); color: var(--ok-fg); }
+  .q-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .q-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-url { font: 12px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-url a { color: inherit; text-decoration: none; }
+  .q-url a:hover { text-decoration: underline; }
+  .q-detail { font-size: 13px; color: var(--muted); }
+  .q-detail.error { color: var(--err-fg); }
+  .bar { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 4px; max-width: 520px; }
+  .bar > div { height: 6px; background: var(--bar); border-radius: 999px; transition: width .3s; }
+
+  .log-head { padding: 8px 14px 8px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .log-head h2 { flex-grow: 1; }
+  .seg { display: inline-flex; background: var(--line-soft); border-radius: 10px; padding: 3px; }
+  .seg button { min-height: 34px; padding: 0 12px; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; background: transparent; }
+  .seg button[aria-pressed="true"] { background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  .log { background: var(--ink); padding: 14px 22px; height: 300px; overflow-y: auto; font: 12.5px/1.7 var(--mono); border-radius: 0 0 14px 14px; }
+  .log-line { display: flex; gap: 12px; }
+  .log-line .tm { color: #A1A1AA; flex: 0 0 auto; }
+  .log-line .tx { white-space: pre-wrap; word-break: break-word; color: #D4D4D8; }
+  .log-line.ok .tx { color: #86EFAC; }
+  .log-line.warn .tx { color: #FCD34D; }
+  .log-line.error .tx { color: #FCA5A5; }
+  .log-empty { color: #A1A1AA; }
+
+  .section { display: flex; flex-direction: column; gap: 16px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label, .label { font-weight: 500; font-size: 14px; }
+  .field input, .field select, .field textarea { min-height: 44px; border: 1px solid #D4D4D8; border-radius: 10px; padding: 0 14px; font-size: 14px; background: var(--card); width: 100%; }
+  .field select { padding: 0 10px; }
+  .field textarea { padding: 12px 14px; font: 13px/1.55 var(--mono); resize: vertical; min-height: 260px; }
+  .field .row { display: flex; gap: 8px; }
+  .field .row input { flex: 1 1 auto; min-width: 0; font-family: var(--mono); }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .short { max-width: 280px; }
+  .sec-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 16px; }
+  .sec-head > div { flex: 1 1 320px; }
+  .adv-toggle { width: 100%; min-height: 64px; padding: 12px 22px; border: none; background: transparent; display: flex; align-items: center; gap: 12px; cursor: pointer; text-align: left; border-radius: 14px; }
+  .adv-toggle .chev { font-size: 20px; color: var(--muted); transition: transform .2s; }
+  .adv-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .adv-body { padding: 16px 22px 22px; border-top: 1px solid var(--line-soft); }
+  .saved { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ok-fg); }
+  .saved.busy { color: var(--muted); }
+  .saved.fail { color: var(--err); }
+  .page-title { margin: 0; font-size: 20px; font-weight: 700; flex-grow: 1; }
+
+  .toast { position: fixed; bottom: 16px; right: 16px; background: var(--ink); color: #FFF; padding: 10px 16px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 50; max-width: calc(100vw - 32px); }
+  .toast.show { opacity: 1; }
+  .toast.error { background: var(--err); }
+
+  @media (max-width: 640px) {
+    .wrap, .top-inner { padding-left: 14px; padding-right: 14px; }
+    .grid2 { grid-template-columns: minmax(0, 1fr); }
+    .q-item { flex-wrap: wrap; }
+    .badge { min-width: 0; }
+  }
+</style>
 </head>
-<body class="bg-gray-100 text-gray-800 font-sans h-screen flex flex-col">
+<body>
 
-    <!-- Header -->
-    <header class="bg-indigo-600 text-white p-4 shadow-md flex justify-between items-center shrink-0">
-        <div class="flex items-center gap-3">
-            <h1 class="text-xl font-bold flex items-center">
-                <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
-                Loka Translator Control Panel
-            </h1>
-            <span id="app-version" class="text-sm bg-white text-indigo-800 px-3 py-1 rounded-full font-mono font-bold tracking-wide" title="Версия запущенного приложения">Версия: загрузка…</span>
-            <span id="usage" class="text-xs bg-indigo-800 text-indigo-100 px-3 py-1 rounded-full font-mono hidden" title="Расход текущего/последнего прогона"></span>
-        </div>
-        <div class="space-x-2 flex items-center">
-            <span class="text-sm text-indigo-100">Языки определяются из страницы Lokalise</span>
-            <label class="flex items-center gap-2 cursor-pointer text-sm font-medium mr-2 text-white hover:text-indigo-200" title="Внимание: Включите, чтобы перезаписать уже существующие переводы!">
-                <div class="relative">
-                    <input type="checkbox" id="cfg_overwriteFilled" class="sr-only peer">
-                    <div class="w-9 h-5 bg-gray-400 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"></div>
-                </div>
-                Перезапись всех переводов
-            </label>
-            <button id="btnStart" class="bg-green-500 hover:bg-green-400 text-white px-4 py-2 rounded transition font-medium text-sm">Start Translation</button>
-            <button id="btnStop" class="bg-red-500 hover:bg-red-400 text-white px-4 py-2 rounded transition font-medium text-sm hidden">Stop</button>
-        </div>
-    </header>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand"><b>Loka Translator</b><span class="version" id="version"></span></div>
+    <div class="usage" id="usage" title="Расход текущего или последнего запуска" hidden></div>
+    <button type="button" class="btn" id="navSettings">
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Настройки
+    </button>
+    <button type="button" class="btn" id="navBack" hidden>
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+      К очереди
+    </button>
+  </div>
+</header>
 
-    <!-- Main Content -->
-    <div class="flex flex-1 overflow-hidden">
-        
-        <!-- Sidebar Settings -->
-        <div id="sidebar" class="w-1/3 shrink-0 bg-white overflow-y-auto p-4 flex flex-col gap-4 transition-all duration-300 overflow-hidden">
-            
-            <div class="flex justify-between items-center shrink-0 mb-2">
-                <h2 class="text-lg font-bold text-gray-800">Configurations</h2>
-                <button id="btnCollapseSidebar" class="p-1 text-gray-400 hover:text-indigo-600 transition" title="Collapse Sidebar">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
-                </button>
-            </div>
+<!-- ===================== ГЛАВНЫЙ ЭКРАН ===================== -->
+<main class="wrap" id="viewMain">
 
-            <div class="bg-gray-50 p-3 rounded border flex flex-col">
-                <div class="flex justify-between items-center mb-2">
-                    <h2 class="font-semibold text-gray-700">Translation Prompt</h2>
-                    <button id="btnResetPrompt" class="text-xs text-indigo-600 hover:text-indigo-800 hover:underline transition" title="Заменить текущий промпт рекомендованным">Сбросить на дефолтный</button>
-                </div>
-                <p class="text-xs text-gray-500 mb-2">Общие правила перевода. Исходный язык и все целевые языки берутся из страницы; выбирать направление здесь не нужно.</p>
-                <textarea id="prompt" class="w-full h-48 min-h-[80px] max-h-[600px] border border-gray-300 rounded p-2 text-sm font-mono resize-y focus:ring focus:ring-indigo-200 focus:outline-none"></textarea>
-            </div>
-
-            <div class="bg-gray-50 p-3 rounded border">
-                <h2 class="font-semibold text-gray-700 mb-2 border-b pb-1">API Settings</h2>
-                <div class="space-y-2">
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">ANTHROPIC_API_KEY</label>
-                        <input type="password" id="cfg_anthropicApiKey" class="w-full border rounded p-1.5 text-sm" placeholder="sk-ant-... (или переменная окружения ANTHROPIC_API_KEY)" autocomplete="off">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">MODEL</label>
-                        <select id="cfg_model" class="w-full border rounded p-1.5 text-sm bg-white">
-                            <option value="claude-haiku-5-5" selected>Claude Haiku 5.5 — быстрая и дешёвая (по умолчанию)</option>
-                            <option value="claude-sonnet-5-5">Claude Sonnet 5.5 — точнее стиль и грамматика</option>
-                            <option value="claude-opus-5-5">Claude Opus 5.5 — максимум качества, дорого</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">FALLBACK_MODEL</label>
-                        <select id="cfg_fallbackModel" class="w-full border rounded p-1.5 text-sm bg-white" title="Подключается для пачки, если основная модель перегружена или дважды ответила некорректно">
-                            <option value="claude-sonnet-5-5" selected>Claude Sonnet 5.5 (по умолчанию)</option>
-                            <option value="claude-opus-5-5">Claude Opus 5.5</option>
-                            <option value="claude-haiku-5-5">Claude Haiku 5.5</option>
-                            <option value="none">Без запасной модели</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">BUDGET_PER_RUN, $ (0 — без лимита)</label>
-                        <input type="number" id="cfg_budgetUsd" data-float="1" step="0.01" min="0" class="w-full border rounded p-1.5 text-sm" placeholder="0">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">MAX_CONCURRENCY</label>
-                        <input type="number" id="cfg_maxConcurrency" class="w-full border rounded p-1.5 text-sm" placeholder="1">
-                    </div>
-                </div>
-            </div>
-
-
-
-            
-
-
-            <div class="bg-gray-50 p-3 rounded border">
-                <h2 class="font-semibold text-gray-700 mb-2 border-b pb-1">Delays (ms)</h2>
-                <div class="grid grid-cols-2 gap-2">
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">SCROLL</label>
-                        <input type="number" id="cfg_scrollDelay" class="w-full border rounded p-1.5 text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">EDITOR_LOAD</label>
-                        <input type="number" id="cfg_editorLoadDelay" class="w-full border rounded p-1.5 text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">BEFORE_SAVE</label>
-                        <input type="number" id="cfg_beforeSaveDelay" class="w-full border rounded p-1.5 text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">ROW_NEXT</label>
-                        <input type="number" id="cfg_rowNextDelay" class="w-full border rounded p-1.5 text-sm">
-                    </div>
-                </div>
-            </div>
-
-            <div class="bg-gray-50 p-3 rounded border">
-                <h2 class="font-semibold text-gray-700 mb-2 border-b pb-1">Telegram Notifier</h2>
-                <div class="space-y-2">
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">TG_BOT_TOKEN</label>
-                        <input type="password" id="cfg_tgBotToken" class="w-full border rounded p-1.5 text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">CHAT_ID</label>
-                        <input type="text" id="cfg_chatId" class="w-full border rounded p-1.5 text-sm">
-                    </div>
-                </div>
-            </div>
-
-        </div>
-
-        <!-- Center Inputs (Projects) -->
-        <div class="flex-1 flex flex-col border-r bg-white transition-all duration-300 min-w-0">
-            <div class="flex flex-col p-4 flex-1">
-                <div class="flex justify-between items-center mb-4">
-                    <div class="flex items-center gap-2">
-                        <button id="btnExpandSidebar" class="p-1 text-gray-400 hover:text-indigo-600 transition hidden" title="Expand Sidebar">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
-                        </button>
-                        <h2 class="text-lg font-bold text-gray-800">Projects to Translate</h2>
-                    </div>
-                    <span class="text-xs text-gray-500 font-medium bg-gray-100 px-2 py-1 rounded" id="projects-count">0 projects</span>
-                </div>
-                <div class="mb-3 flex gap-2 shrink-0">
-                    <input type="text" id="new-project-input" class="flex-1 border border-indigo-300 rounded p-1.5 text-sm font-mono focus:ring focus:ring-indigo-200 focus:outline-none placeholder-gray-400" placeholder="Paste URL and press Enter...">
-                    <button id="btn-add-project" class="bg-indigo-500 text-white px-3 py-1.5 rounded text-sm hover:bg-indigo-400 font-medium transition shrink-0">Add</button>
-                </div>
-                <div id="projects-container" class="flex-1 overflow-y-auto space-y-2 pr-2">
-                    <!-- Dynamic inputs will be inserted here -->
-                </div>
-            </div>
-        </div>
-
-        <!-- Right Terminal -->
-        <div id="right-terminal" class="flex-[2] bg-gray-900 text-green-400 font-mono text-xs flex flex-col relative transition-all duration-300 min-w-0">
-            <div class="bg-gray-800 text-gray-300 px-3 py-1 text-xs border-b border-gray-700 flex justify-between items-center shrink-0">
-                <span>System Logs</span>
-                <button id="btnClearLogs" class="hover:text-white transition">Clear</button>
-            </div>
-            <div id="terminal" class="flex-1 overflow-y-auto p-3 whitespace-pre-wrap break-words"></div>
-        </div>
+  <div class="banner" id="bannerKey" role="alert" hidden>
+    <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C2410C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+    <div style="flex: 1 1 320px">
+      <div class="t">Не указан ключ Anthropic</div>
+      <div class="d">Без него перевод не запустится. Ключ создаётся в Claude Console.</div>
     </div>
+    <button type="button" class="btn" id="bannerToSettings">Указать ключ</button>
+  </div>
 
-    <!-- Toast Notification -->
-    <div id="toast" class="fixed bottom-4 right-4 bg-gray-800 text-white px-4 py-2 rounded shadow-lg transition-opacity duration-300 opacity-0 pointer-events-none z-50">
-        Notification
+  <section class="card pad run" aria-labelledby="runTitle">
+    <div class="run-text">
+      <h2 id="runTitle">Загрузка…</h2>
+      <div class="hint" id="runSub"></div>
     </div>
+    <label class="check">
+      <input type="checkbox" id="overwrite">
+      <span>
+        <span class="t">Перезаписывать заполненные</span>
+        <span class="d" id="overwriteHint">Выкл. — заполняются только пустые ячейки</span>
+      </span>
+    </label>
+    <button type="button" class="btn btn-primary" id="btnStart" disabled>
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5z"/></svg>
+      Запустить перевод
+    </button>
+    <button type="button" class="btn btn-stop" id="btnStop" hidden>
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      Остановить
+    </button>
+  </section>
 
-    <script>
-        const DOM = {
-            cfgInputs: document.querySelectorAll('input[id^="cfg_"], select[id^="cfg_"]'),
-            projectsContainer: document.getElementById('projects-container'),
-            projectsCount: document.getElementById('projects-count'),
-            prompt: document.getElementById('prompt'),
-            btnResetPrompt: document.getElementById('btnResetPrompt'),
-            btnStart: document.getElementById('btnStart'),
-            btnStop: document.getElementById('btnStop'),
-            terminal: document.getElementById('terminal'),
-            btnClearLogs: document.getElementById('btnClearLogs'),
-            toast: document.getElementById('toast'),
-            sidebar: document.getElementById('sidebar'),
-            btnCollapseSidebar: document.getElementById('btnCollapseSidebar'),
-            btnExpandSidebar: document.getElementById('btnExpandSidebar'),
-            rightTerminal: document.getElementById('right-terminal'),
-            appVersion: document.getElementById('app-version'),
-            usage: document.getElementById('usage'),
-            newProjectInput: document.getElementById('new-project-input'),
-            btnAddProject: document.getElementById('btn-add-project')
-        };
+  <section class="card" aria-labelledby="queueTitle">
+    <div class="q-head">
+      <h2 id="queueTitle">Очередь проектов</h2>
+      <span class="hint" id="queueSummary"></span>
+      <button type="button" class="btn-link btn" id="clearDone" hidden>Убрать готовые</button>
+    </div>
+    <form class="q-add" id="addForm">
+      <label for="newUrl" class="sr-only">Ссылка на проект Lokalise</label>
+      <input id="newUrl" type="text" inputmode="url" autocomplete="off" placeholder="Вставьте ссылку Lokalise — можно несколько, каждую с новой строки">
+      <button type="submit" class="btn btn-outline">Добавить</button>
+      <div class="hint" id="addHint" hidden>Добавленные во время перевода обработаются при следующем запуске.</div>
+    </form>
+    <div class="q-empty" id="queueEmpty" hidden>Очередь пуста. Добавьте ссылку на проект Lokalise, чтобы начать.</div>
+    <ul class="q-list" id="queueList"></ul>
+  </section>
 
-        let isRunning = false;
-        // Если конфиг не загрузился, автосейв не должен перетереть файл пустыми полями.
-        let configLoaded = false;
-        let defaultPrompt = '';
-        const API_HEADERS = {'X-Loka-Request': '1'};
+  <section class="card" aria-labelledby="logTitle">
+    <div class="log-head">
+      <h2 id="logTitle">Журнал</h2>
+      <div class="seg" role="group" aria-label="Фильтр журнала">
+        <button type="button" id="fltAll" aria-pressed="true">Всё</button>
+        <button type="button" id="fltProblems" aria-pressed="false">Проблемы · <span id="problemCount">0</span></button>
+      </div>
+      <button type="button" class="btn btn-link" id="logClear">Очистить</button>
+      <button type="button" class="btn btn-link" id="logToggle" aria-expanded="true" aria-controls="log">Свернуть</button>
+    </div>
+    <div class="log" id="log" role="log" aria-live="polite"></div>
+  </section>
+</main>
 
-        // Модель, которой нет в списке (вписана руками в config.json), не теряем —
-        // добавляем её отдельным пунктом.
-        function setSelectValue(select, value) {
-            if (!value) return;
-            if (!Array.from(select.options).some(o => o.value === value)) {
-                const opt = document.createElement('option');
-                opt.value = value;
-                opt.textContent = value + ' (из config.json)';
-                select.appendChild(opt);
-            }
-            select.value = value;
-        }
+<!-- ===================== НАСТРОЙКИ ===================== -->
+<main class="wrap narrow" id="viewSettings" hidden>
+  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+    <h1 class="page-title">Настройки</h1>
+    <span class="saved" id="saveState" role="status">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      <span id="saveText">Сохраняется автоматически</span>
+    </span>
+  </div>
 
-        function createProjectInput(value = "") {
-            const wrap = document.createElement('div');
-            wrap.className = "flex gap-2 items-center shrink-0";
+  <section class="card pad section" aria-labelledby="sTr">
+    <div>
+      <h2 id="sTr">Перевод</h2>
+      <p class="sub">Ключ и модель Anthropic, лимит расходов.</p>
+    </div>
+    <div class="field">
+      <label for="f_key">Ключ Anthropic</label>
+      <div class="row">
+        <input id="f_key" data-field="anthropicApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+        <button type="button" class="btn" id="keyToggle" aria-controls="f_key">Показать</button>
+      </div>
+      <span class="hint" id="keyHint">Создаётся в Claude Console. Хранится только на этом компьютере.</span>
+    </div>
+    <div class="grid2">
+      <div class="field">
+        <label for="f_model">Модель</label>
+        <select id="f_model" data-field="model">
+          <option value="claude-haiku-5-5">Haiku 5.5 — быстро и дёшево</option>
+          <option value="claude-sonnet-5-5">Sonnet 5.5 — точнее стиль</option>
+          <option value="claude-opus-5-5">Opus 5.5 — максимум качества</option>
+        </select>
+        <span class="hint">Для субтитров обычно хватает Haiku.</span>
+      </div>
+      <div class="field">
+        <label for="f_fallback">Запасная модель</label>
+        <select id="f_fallback" data-field="fallbackModel">
+          <option value="claude-sonnet-5-5">Sonnet 5.5</option>
+          <option value="claude-opus-5-5">Opus 5.5</option>
+          <option value="claude-haiku-5-5">Haiku 5.5</option>
+          <option value="none">Не использовать</option>
+        </select>
+        <span class="hint">Если основная перегружена или ошибается. Sonnet дороже Haiku в ~20 раз.</span>
+      </div>
+    </div>
+    <div class="field short">
+      <label for="f_budget">Лимит на один запуск, $</label>
+      <input id="f_budget" data-field="budgetUsd" data-kind="float" type="number" step="0.01" min="0" placeholder="0">
+      <span class="hint">0 — без лимита. При достижении перевод остановится.</span>
+    </div>
+  </section>
 
-            const input = document.createElement('input');
-            input.type = "text";
-            input.className = "flex-1 border rounded p-1.5 text-sm font-mono focus:ring focus:ring-indigo-200 focus:outline-none project-url";
-            input.value = value;
+  <section class="card pad section" aria-labelledby="sPrompt">
+    <div class="sec-head">
+      <div>
+        <h2 id="sPrompt">Правила перевода</h2>
+        <p class="sub">Стиль и требования к языкам. Направление перевода подставляется само по странице Lokalise.</p>
+      </div>
+      <button type="button" class="btn" id="resetPrompt">Вернуть рекомендованные</button>
+    </div>
+    <div class="field">
+      <label for="f_prompt" class="sr-only">Текст правил перевода</label>
+      <textarea id="f_prompt" data-field="translationPrompt" spellcheck="false"></textarea>
+    </div>
+  </section>
 
-            const btnRemove = document.createElement('button');
-            btnRemove.innerHTML = "&times;";
-            btnRemove.className = "text-gray-400 hover:text-red-500 font-bold px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded";
-            btnRemove.onclick = () => {
-                wrap.remove();
-                updateProjectsCount();
-                autoSave();
-            };
+  <section class="card pad section" aria-labelledby="sTg">
+    <div>
+      <h2 id="sTg">Уведомления в Telegram <span style="font-weight: 400; color: var(--muted); font-size: 14px">· необязательно</span></h2>
+      <p class="sub">Сообщение о каждом готовом проекте и об ошибках.</p>
+    </div>
+    <div class="grid2">
+      <div class="field">
+        <label for="f_tg">Токен бота</label>
+        <input id="f_tg" data-field="tgBotToken" type="password" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="f_chat">ID чата</label>
+        <input id="f_chat" data-field="chatId" type="text" inputmode="numeric" placeholder="например, 123456789">
+      </div>
+    </div>
+  </section>
 
-            input.addEventListener('input', () => {
-                if (input.value.trim() === "") {
-                    wrap.remove();
-                }
-                updateProjectsCount();
-                autoSave();
-            });
+  <section class="card" aria-labelledby="sAdv">
+    <button type="button" class="adv-toggle" id="advToggle" aria-expanded="false" aria-controls="advBody">
+      <span style="flex-grow: 1">
+        <span id="sAdv" style="display: block; font-size: 16px; font-weight: 600">Дополнительно</span>
+        <span class="hint" style="font-size: 14px">Скорость работы с Lokalise. Меняйте, только если что-то не успевает загружаться.</span>
+      </span>
+      <span class="chev" aria-hidden="true">›</span>
+    </button>
+    <div class="adv-body section" id="advBody" hidden>
+      <div class="field short">
+        <label for="f_threads">Проектов одновременно</label>
+        <input id="f_threads" data-field="maxConcurrency" data-kind="int" type="number" min="1" max="8">
+        <span class="hint">Каждый проект — отдельная вкладка браузера.</span>
+      </div>
+      <div class="label">Паузы, мс</div>
+      <div class="grid2">
+        <div class="field"><label for="f_d1">При прокрутке списка</label><input id="f_d1" data-field="scrollDelay" data-kind="int" type="number" min="0" step="100"></div>
+        <div class="field"><label for="f_d2">После открытия редактора</label><input id="f_d2" data-field="editorLoadDelay" data-kind="int" type="number" min="0" step="100"></div>
+        <div class="field"><label for="f_d3">Перед сохранением</label><input id="f_d3" data-field="beforeSaveDelay" data-kind="int" type="number" min="0" step="100"></div>
+        <div class="field"><label for="f_d4">Между строками</label><input id="f_d4" data-field="rowNextDelay" data-kind="int" type="number" min="0" step="100"></div>
+      </div>
+      <button type="button" class="btn" id="resetDelays" style="align-self: flex-start">Сбросить паузы по умолчанию</button>
+    </div>
+  </section>
+</main>
 
-            wrap.appendChild(input);
-            wrap.appendChild(btnRemove);
-            return wrap;
-        }
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-        function handleAddProject(val) {
-            const urls = val.split('\n').map(l => l.trim()).filter(l => l !== "" && !l.startsWith("#"));
-            // Reverse so they are prepended in the original top-to-bottom order
-            urls.reverse().forEach(url => {
-                DOM.projectsContainer.prepend(createProjectInput(url));
-            });
-            updateProjectsCount();
-            autoSave();
-        }
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const API_HEADERS = { 'X-Loka-Request': '1' };
+  const DEFAULT_DELAYS = { scrollDelay: 2000, editorLoadDelay: 500, beforeSaveDelay: 300, rowNextDelay: 200 };
+  const MODEL_NAMES = { 'claude-haiku-5-5': 'Claude Haiku 5.5', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'claude-opus-5-5': 'Claude Opus 5.5' };
+  const STATUS_LABEL = { running: 'В работе', pending: 'В очереди', error: 'Ошибка', done: 'Готово' };
+  const MAX_LOG = 2000;
 
-        DOM.newProjectInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                handleAddProject(DOM.newProjectInput.value);
-                DOM.newProjectInput.value = '';
-            }
-        });
+  const st = {
+    cfg: null,            // конфиг с сервера; null — не загружен, автосейв запрещён
+    running: false,
+    envKey: false,
+    defaultPrompt: '',
+    statuses: {},         // url → {status, name, done, total, detail}
+    hiddenDone: new Set(),
+    logs: [],
+    onlyProblems: false,
+  };
 
-        DOM.newProjectInput.addEventListener('paste', (e) => {
-            const pasteData = (e.clipboardData || window.clipboardData).getData('text');
-            if (pasteData.includes('\n')) {
-                e.preventDefault();
-                handleAddProject(pasteData);
-                DOM.newProjectInput.value = '';
-            }
-        });
+  // ---------- helpers ----------
+  function plural(n, one, few, many) {
+    const m10 = n % 10, m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return one;
+    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+    return many;
+  }
+  function fmtTokens(n) {
+    return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+  }
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  let toastTimer;
+  function toast(msg, isError) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (isError ? ' error' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.className = 'toast'; }, 3000);
+  }
+  function hasKey() {
+    return st.envKey || !!(st.cfg && st.cfg.anthropicApiKey && st.cfg.anthropicApiKey.trim());
+  }
 
-        DOM.btnAddProject.addEventListener('click', () => {
-            handleAddProject(DOM.newProjectInput.value);
-            DOM.newProjectInput.value = '';
-            DOM.newProjectInput.focus();
-        });
+  // ---------- навигация ----------
+  function showView(name) {
+    const settings = name === 'settings';
+    $('viewMain').hidden = settings;
+    $('viewSettings').hidden = !settings;
+    $('navSettings').hidden = settings;
+    $('navBack').hidden = !settings;
+    if (location.hash !== (settings ? '#settings' : '')) {
+      history.replaceState(null, '', settings ? '#settings' : location.pathname);
+    }
+    window.scrollTo(0, 0);
+  }
+  $('navSettings').onclick = () => showView('settings');
+  $('bannerToSettings').onclick = () => { showView('settings'); $('f_key').focus(); };
+  $('navBack').onclick = () => showView('main');
+  window.addEventListener('hashchange', () => showView(location.hash === '#settings' ? 'settings' : 'main'));
 
-        function getProjectList() {
-            const inputs = Array.from(DOM.projectsContainer.querySelectorAll('.project-url'));
-            return inputs.map(i => i.value.trim()).filter(v => v !== "");
-        }
+  // ---------- загрузка / сохранение ----------
+  async function loadData() {
+    try {
+      const res = await fetch('/api/data');
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      st.cfg = data.config;
+      st.cfg.projects = st.cfg.projects || [];
+      st.running = !!data.isRunning;
+      st.envKey = !!data.envApiKey;
+      st.defaultPrompt = data.defaultPrompt || '';
+      st.statuses = data.projectStatus || {};
+      $('version').textContent = 'v' + data.version;
+      fillSettings();
+      renderAll();
+    } catch (e) {
+      st.cfg = null;
+      $('runTitle').textContent = 'Не удалось загрузить настройки';
+      $('runSub').textContent = 'Сохранение заблокировано, чтобы ничего не потерять. Проверьте data/config.json и перезапустите приложение.';
+      addLog('error', '', 'Не удалось загрузить конфигурацию: ' + e.message);
+    }
+  }
 
-        function updateProjectsCount() {
-            const count = getProjectList().length;
-            DOM.projectsCount.textContent = `${count} project${count !== 1 ? 's' : ''}`;
-        }
+  let saveTimer, saveSeq = 0;
+  function scheduleSave() {
+    if (!st.cfg) return;
+    setSaveState('busy', 'Сохраняю…');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 600);
+  }
+  async function save() {
+    if (!st.cfg) return false;
+    const seq = ++saveSeq;
+    try {
+      const res = await fetch('/api/save', {
+        method: 'POST',
+        headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: st.cfg }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      if (seq === saveSeq) setSaveState('ok', 'Сохранено');
+      return true;
+    } catch (e) {
+      setSaveState('fail', 'Не сохранилось');
+      toast('Не удалось сохранить: ' + e.message, true);
+      return false;
+    }
+  }
+  function setSaveState(kind, text) {
+    $('saveState').className = 'saved' + (kind === 'busy' ? ' busy' : kind === 'fail' ? ' fail' : '');
+    $('saveText').textContent = text;
+  }
 
-        function renderProjects(projectsString) {
-            DOM.projectsContainer.innerHTML = '';
-            const urls = projectsString.split('\n').map(l => l.trim()).filter(l => l !== "" && !l.startsWith("#"));
-            urls.forEach(url => {
-                DOM.projectsContainer.appendChild(createProjectInput(url));
-            });
-            updateProjectsCount();
-        }
+  // ---------- настройки ----------
+  function setSelect(select, value) {
+    if (!value) return;
+    if (![...select.options].some((o) => o.value === value)) {
+      const opt = el('option', null, value + ' (из config.json)');
+      opt.value = value;
+      select.appendChild(opt);
+    }
+    select.value = value;
+  }
+  function fillSettings() {
+    document.querySelectorAll('[data-field]').forEach((input) => {
+      const v = st.cfg[input.dataset.field];
+      if (input.tagName === 'SELECT') setSelect(input, v);
+      else input.value = v ?? '';
+    });
+    $('overwrite').checked = !!st.cfg.overwriteFilled;
+    $('keyHint').textContent = st.envKey && !st.cfg.anthropicApiKey
+      ? 'Сейчас используется ключ из переменной окружения ANTHROPIC_API_KEY.'
+      : 'Создаётся в Claude Console. Хранится только на этом компьютере.';
+  }
+  document.querySelectorAll('[data-field]').forEach((input) => {
+    const handler = () => {
+      if (!st.cfg) return;
+      const kind = input.dataset.kind;
+      st.cfg[input.dataset.field] = kind === 'float' ? (parseFloat(input.value) || 0)
+        : kind === 'int' ? (parseInt(input.value, 10) || 0)
+        : input.value;
+      scheduleSave();
+      renderRun();
+    };
+    input.addEventListener('input', handler);
+    input.addEventListener('change', handler);
+  });
+  $('keyToggle').onclick = () => {
+    const show = $('f_key').type === 'password';
+    $('f_key').type = show ? 'text' : 'password';
+    $('keyToggle').textContent = show ? 'Скрыть' : 'Показать';
+  };
+  $('resetPrompt').onclick = () => {
+    if (!st.cfg || !st.defaultPrompt) return;
+    if ($('f_prompt').value.trim() === st.defaultPrompt.trim()) { toast('Уже стоят рекомендованные правила'); return; }
+    if (!confirm('Заменить текущие правила рекомендованными? Ваш текст будет потерян.')) return;
+    st.cfg.translationPrompt = st.defaultPrompt;
+    $('f_prompt').value = st.defaultPrompt;
+    scheduleSave();
+    toast('Правила перевода сброшены');
+  };
+  $('resetDelays').onclick = () => {
+    if (!st.cfg) return;
+    Object.assign(st.cfg, DEFAULT_DELAYS);
+    fillSettings();
+    scheduleSave();
+    toast('Паузы сброшены');
+  };
+  $('advToggle').onclick = () => {
+    const open = $('advToggle').getAttribute('aria-expanded') !== 'true';
+    $('advToggle').setAttribute('aria-expanded', String(open));
+    $('advBody').hidden = !open;
+  };
+  $('overwrite').onchange = () => {
+    if (!st.cfg) return;
+    st.cfg.overwriteFilled = $('overwrite').checked;
+    scheduleSave();
+    renderRun();
+  };
 
-        function showToast(msg, isError = false) {
-            DOM.toast.textContent = msg;
-            DOM.toast.className = `fixed bottom-4 right-4 px-4 py-2 rounded shadow-lg transition-opacity duration-300 z-50 text-white ${isError ? 'bg-red-600' : 'bg-green-600'}`;
-            DOM.toast.style.opacity = '1';
-            setTimeout(() => { DOM.toast.style.opacity = '0'; }, 3000);
-        }
+  // ---------- очередь ----------
+  function queueItems() {
+    if (!st.cfg) return [];
+    const items = st.cfg.projects.map((url) => ({ url, ...(st.statuses[url] || { status: 'pending' }) }));
+    // Готовые сервер уже убрал из очереди — показываем их до «Убрать готовые».
+    for (const [url, s] of Object.entries(st.statuses)) {
+      if (s.status === 'done' && !st.cfg.projects.includes(url) && !st.hiddenDone.has(url)) items.push({ url, ...s });
+    }
+    return items;
+  }
 
-        function appendLog(text) {
-            const span = document.createElement('span');
-            
-            // Basic colorization based on content
-            if(text.includes('❌') || text.includes('error') || text.includes('WARN')) {
-                span.className = 'text-red-400';
-            } else if (text.includes('✅') || text.includes('🚀')) {
-                span.className = 'text-green-300';
-            } else if (text.includes('⚠️')) {
-                span.className = 'text-yellow-400';
-            } else if (text.includes('ℹ️') || text.includes('info')) {
-                span.className = 'text-blue-300';
-            }
+  function renderQueue() {
+    const items = queueItems();
+    const list = $('queueList');
+    list.replaceChildren();
+    $('queueEmpty').hidden = items.length > 0;
 
-            span.textContent = text + (text.endsWith('\n') ? '' : '\n');
-            DOM.terminal.appendChild(span);
-            DOM.terminal.scrollTop = DOM.terminal.scrollHeight;
-        }
+    for (const it of items) {
+      const status = it.status || 'pending';
+      const li = el('li', 'q-item');
+      li.appendChild(el('span', 'badge ' + status, STATUS_LABEL[status] || status));
 
-        async function loadData() {
-            try {
-                const res = await fetch('/api/data');
-                if (!res.ok) throw new Error(await res.text());
-                const data = await res.json();
-                
-                if(data.config) {
-                    DOM.cfgInputs.forEach(input => {
-                        const key = input.id.replace('cfg_', '');
-                        if(data.config[key] !== undefined) {
-                            if (input.type === 'checkbox') {
-                                input.checked = data.config[key];
-                            } else if (input.tagName === 'SELECT') {
-                                setSelectValue(input, data.config[key]);
-                            } else {
-                                input.value = data.config[key];
-                            }
-                        }
-                    });
+      const body = el('div', 'q-body');
+      body.appendChild(el('div', 'q-name', it.name || shortName(it.url)));
+      const urlLine = el('div', 'q-url');
+      const a = el('a', null, it.url);
+      a.href = it.url; a.target = '_blank'; a.rel = 'noopener';
+      urlLine.appendChild(a);
+      body.appendChild(urlLine);
 
-                    DOM.prompt.value = data.config.translationPrompt || '';
+      if (status === 'running' && it.total > 0) {
+        const pct = Math.min(100, Math.round((it.done / it.total) * 100));
+        const bar = el('div', 'bar');
+        bar.setAttribute('role', 'progressbar');
+        bar.setAttribute('aria-label', 'Прогресс проекта');
+        bar.setAttribute('aria-valuemin', '0');
+        bar.setAttribute('aria-valuemax', '100');
+        bar.setAttribute('aria-valuenow', String(pct));
+        const fill = el('div');
+        fill.style.width = pct + '%';
+        bar.appendChild(fill);
+        body.appendChild(bar);
+      }
+      let detail = it.detail || '';
+      if (status === 'running' && it.total > 0) {
+        detail = `Обработано ${it.done} из ${it.total} ${plural(it.total, 'ячейки', 'ячеек', 'ячеек')}` + (it.detail ? ' · ' + it.detail : '');
+      }
+      if (!detail && status === 'pending') detail = 'Ждёт запуска';
+      if (detail) body.appendChild(el('div', 'q-detail' + (status === 'error' ? ' error' : ''), detail));
+      li.appendChild(body);
 
-                    renderProjects((data.config.projects || []).join('\n'));
-                }
-                
-                defaultPrompt = data.defaultPrompt || '';
+      const rm = el('button', 'icon-btn');
+      rm.type = 'button';
+      rm.title = rm.ariaLabel = 'Убрать из очереди';
+      rm.setAttribute('aria-label', 'Убрать из очереди');
+      rm.disabled = st.running && status !== 'done';
+      rm.innerHTML = '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+      rm.onclick = () => removeProject(it.url, status);
+      li.appendChild(rm);
+      list.appendChild(li);
+    }
 
-                if(data.version) {
-                    DOM.appVersion.textContent = `Версия ${data.version}`;
-                }
-                
-                updateUIState(data.isRunning);
-                configLoaded = true;
-                
-                appendLog("✅ Configuration loaded.");
-            } catch(e) {
-                showToast("Failed to load data", true);
-                appendLog("❌ Failed to load configuration: " + e);
-            }
-        }
+    const count = (s) => items.filter((i) => (i.status || 'pending') === s).length;
+    const parts = [];
+    if (count('running')) parts.push('в работе ' + count('running'));
+    if (count('pending')) parts.push('ждут ' + count('pending'));
+    if (count('error')) parts.push('с ошибкой ' + count('error'));
+    if (count('done')) parts.push('готово ' + count('done'));
+    $('queueSummary').textContent = parts.join(' · ');
+    $('clearDone').hidden = count('done') === 0;
+    $('addHint').hidden = !st.running;
+  }
 
-        let saveTimeout;
-        function autoSave() {
-            clearTimeout(saveTimeout);
-            saveTimeout = setTimeout(() => {
-                saveData(true);
-            }, 800);
-        }
+  function shortName(url) {
+    try {
+      const u = new URL(url);
+      return u.hostname + u.pathname.replace(/\/$/, '');
+    } catch { return url; }
+  }
 
-        async function saveData(silent = false) {
-            if (!configLoaded) {
-                const msg = "Конфиг не загружен — сохранение заблокировано, чтобы не потерять настройки. Проверьте data/config.json и перезапустите.";
-                if (!silent) showToast("Save blocked", true);
-                appendLog("❌ " + msg);
-                throw new Error(msg);
-            }
-            const config = {};
-            DOM.cfgInputs.forEach(input => {
-                const key = input.id.replace('cfg_', '');
-                if (input.type === 'number') {
-                    config[key] = input.dataset.float
-                        ? (parseFloat(input.value) || 0)
-                        : (parseInt(input.value, 10) || 0);
-                } else if (input.type === 'checkbox') {
-                    config[key] = input.checked;
-                } else {
-                    config[key] = input.value;
-                }
-            });
+  function removeProject(url, status) {
+    if (status === 'done') {
+      st.hiddenDone.add(url);
+    }
+    if (st.cfg.projects.includes(url)) {
+      st.cfg.projects = st.cfg.projects.filter((p) => p !== url);
+      if (status !== 'done') delete st.statuses[url];
+      scheduleSave();
+    }
+    renderAll();
+  }
 
-            config.projects = getProjectList();
-            config.translationPrompt = DOM.prompt.value;
+  function addProjects(text) {
+    if (!st.cfg) return;
+    const urls = text.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    let added = 0, bad = 0, dup = 0;
+    for (const url of urls) {
+      if (!/^https?:\/\//i.test(url)) { bad++; continue; }
+      if (st.cfg.projects.includes(url)) { dup++; continue; }
+      st.cfg.projects.push(url);
+      st.hiddenDone.delete(url);
+      if (st.statuses[url] && st.statuses[url].status === 'done') delete st.statuses[url];
+      added++;
+    }
+    if (added) scheduleSave();
+    const notes = [];
+    if (added) notes.push('Добавлено: ' + added);
+    if (dup) notes.push('уже в очереди: ' + dup);
+    if (bad) notes.push('не похоже на ссылку: ' + bad);
+    if (notes.length) toast(notes.join(', '), added === 0);
+    renderAll();
+  }
+  $('addForm').onsubmit = (e) => {
+    e.preventDefault();
+    addProjects($('newUrl').value);
+    $('newUrl').value = '';
+  };
+  $('newUrl').addEventListener('paste', (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData('text');
+    if (/\s/.test(text.trim())) {
+      e.preventDefault();
+      addProjects(text);
+    }
+  });
+  $('clearDone').onclick = () => {
+    for (const [url, s] of Object.entries(st.statuses)) if (s.status === 'done') st.hiddenDone.add(url);
+    renderAll();
+  };
 
-            const payload = { config };
+  // ---------- блок запуска ----------
+  function renderRun() {
+    const keyOk = hasKey();
+    const pending = st.cfg ? st.cfg.projects.length : 0;
+    $('bannerKey').hidden = !st.cfg || keyOk;
+    $('btnStart').hidden = st.running;
+    $('btnStop').hidden = !st.running;
+    $('btnStart').disabled = !st.cfg || !keyOk || pending === 0;
 
-            try {
-                const res = await fetch('/api/save', {
-                    method: 'POST',
-                    headers: {...API_HEADERS, 'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                });
-                
-                if(res.ok) {
-                    if (!silent) showToast("Configuration saved!");
-                } else {
-                    throw new Error(await res.text());
-                }
-            } catch(e) {
-                if (!silent) showToast("Save failed", true);
-                appendLog("❌ Save error: " + e);
-                throw e; // rethrow for start to catch
-            }
-        }
+    const ow = st.cfg && st.cfg.overwriteFilled;
+    $('overwriteHint').textContent = ow ? 'Внимание: заполненные переводы будут заменены' : 'Выкл. — заполняются только пустые ячейки';
+    $('overwriteHint').className = 'd' + (ow ? ' warn' : '');
+    $('overwrite').disabled = st.running;
 
-        async function startTask() {
-            try {
-                await saveData(false); // Always save explicitly before starting
-                
-                DOM.btnStart.disabled = true;
-                DOM.btnStart.innerHTML = '<span class="spinner"></span> Starting...';
+    if (!st.cfg) return;
+    const model = MODEL_NAMES[st.cfg.model] || st.cfg.model;
+    if (!keyOk) {
+      $('runTitle').textContent = 'Настройка не завершена';
+      $('runSub').textContent = 'Укажите ключ Anthropic, затем добавьте проекты.';
+    } else if (st.running) {
+      const active = Object.values(st.statuses).filter((s) => s.status === 'running').map((s) => s.name || shortName(s.url));
+      $('runTitle').textContent = 'Идёт перевод';
+      $('runSub').textContent = (active.length ? active.join(', ') + ' · ' : '') + model;
+    } else if (pending === 0) {
+      $('runTitle').textContent = 'Очередь пуста';
+      $('runSub').textContent = 'Добавьте проекты ниже.';
+    } else {
+      $('runTitle').textContent = 'Готов к запуску';
+      $('runSub').textContent = `В очереди ${pending} ${plural(pending, 'проект', 'проекта', 'проектов')} · ${model}. Языки определяются по странице Lokalise.`;
+    }
+  }
 
-                const res = await fetch('/api/start', { method: 'POST', headers: API_HEADERS });
-                if(res.ok) {
-                    updateUIState(true);
-                    showToast("Translation started!");
-                } else {
-                    const errText = await res.text();
-                    showToast("Error starting", true);
-                    appendLog("❌ Start error: " + errText);
-                    updateUIState(false);
-                }
-            } catch(e) {
-                updateUIState(false);
-            }
-        }
+  $('btnStart').onclick = async () => {
+    clearTimeout(saveTimer);
+    if (!(await save())) return; // всегда сохраняем перед стартом
+    $('btnStart').disabled = true;
+    try {
+      const res = await fetch('/api/start', { method: 'POST', headers: API_HEADERS });
+      if (!res.ok) throw new Error(await res.text());
+      st.running = true;
+      st.hiddenDone.clear();
+      renderAll();
+    } catch (e) {
+      toast('Не удалось запустить: ' + e.message, true);
+      renderRun();
+    }
+  };
+  $('btnStop').onclick = async () => {
+    $('btnStop').disabled = true;
+    try {
+      const res = await fetch('/api/stop', { method: 'POST', headers: API_HEADERS });
+      if (res.ok) toast('Останавливаю после текущего шага…');
+    } catch (e) {
+      toast('Не удалось остановить', true);
+    } finally {
+      $('btnStop').disabled = false;
+    }
+  };
 
-        async function stopTask() {
-            try {
-                const res = await fetch('/api/stop', { method: 'POST', headers: API_HEADERS });
-                if(res.ok) {
-                    showToast("Stop signal sent");
-                    appendLog("🛑 Sending stop signal...");
-                }
-            } catch(e) {
-                showToast("Error stopping", true);
-            }
-        }
+  // ---------- расход ----------
+  function renderUsage(u) {
+    const box = $('usage');
+    box.replaceChildren();
+    const cost = '≈ $' + u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2) + (u.costIncomplete ? '+' : '');
+    box.appendChild(el('strong', null, cost));
+    if (u.budgetUsd > 0) box.appendChild(el('span', null, 'из $' + u.budgetUsd.toFixed(2)));
+    const add = (text) => { box.appendChild(el('span', 'dot', '·')); box.appendChild(el('span', null, text)); };
+    add(fmtTokens(u.inputTokens + u.outputTokens) + ' токенов');
+    if (u.memoryHits) add(u.memoryHits + ' из памяти');
+    box.classList.toggle('over', u.budgetUsd > 0 && u.costUsd >= u.budgetUsd);
+    box.hidden = false;
+  }
 
-        function updateUIState(running) {
-            isRunning = running;
-            if(running) {
-                DOM.btnStart.classList.add('hidden');
-                DOM.btnStop.classList.remove('hidden');
-            } else {
-                DOM.btnStart.classList.remove('hidden');
-                DOM.btnStart.disabled = false;
-                DOM.btnStart.innerHTML = 'Start Translation';
-                DOM.btnStop.classList.add('hidden');
-            }
-        }
+  // ---------- журнал ----------
+  function levelOf(text) {
+    if (/❌|💥/.test(text)) return 'error';
+    if (/⚠️|🔁|🛑|🔀|✂️|WARN/.test(text)) return 'warn';
+    if (/error=|не удалось|failed/i.test(text)) return 'error';
+    if (/✅|💾/.test(text)) return 'ok';
+    return 'info';
+  }
+  function addLog(level, time, text) {
+    const entry = { level, time, text };
+    st.logs.push(entry);
+    if (st.logs.length > MAX_LOG) st.logs.splice(0, st.logs.length - MAX_LOG);
+    if (level === 'warn' || level === 'error') $('problemCount').textContent = String(st.logs.filter(isProblem).length);
+    if (!st.onlyProblems || isProblem(entry)) appendLogLine(entry, true);
+  }
+  function isProblem(l) { return l.level === 'warn' || l.level === 'error'; }
+  function appendLogLine(l, stick) {
+    const box = $('log');
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    const empty = box.querySelector('.log-empty');
+    if (empty) empty.remove();
+    const line = el('div', 'log-line ' + l.level);
+    line.appendChild(el('span', 'tm', l.time));
+    line.appendChild(el('span', 'tx', l.text));
+    box.appendChild(line);
+    while (box.childElementCount > MAX_LOG) box.firstElementChild.remove();
+    if (stick && atBottom) box.scrollTop = box.scrollHeight;
+  }
+  function renderLog() {
+    const box = $('log');
+    box.replaceChildren();
+    const lines = st.onlyProblems ? st.logs.filter(isProblem) : st.logs;
+    if (!lines.length) box.appendChild(el('div', 'log-empty', st.onlyProblems ? 'Проблем нет.' : 'Пока пусто.'));
+    lines.forEach((l) => appendLogLine(l, false));
+    box.scrollTop = box.scrollHeight;
+    $('problemCount').textContent = String(st.logs.filter(isProblem).length);
+    $('fltAll').setAttribute('aria-pressed', String(!st.onlyProblems));
+    $('fltProblems').setAttribute('aria-pressed', String(st.onlyProblems));
+  }
+  $('fltAll').onclick = () => { st.onlyProblems = false; renderLog(); };
+  $('fltProblems').onclick = () => { st.onlyProblems = true; renderLog(); };
+  $('logClear').onclick = () => { st.logs = []; renderLog(); };
+  $('logToggle').onclick = () => {
+    const open = $('logToggle').getAttribute('aria-expanded') !== 'true';
+    $('logToggle').setAttribute('aria-expanded', String(open));
+    $('logToggle').textContent = open ? 'Свернуть' : 'Развернуть';
+    $('log').hidden = !open;
+  };
 
-        function fmtTokens(n) {
-            return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
-        }
+  // ---------- события сервера ----------
+  function connectEvents() {
+    const es = new EventSource('/api/logs');
+    es.onmessage = (ev) => {
+      const d = ev.data;
+      if (d.startsWith('___USAGE___|')) {
+        renderUsage(JSON.parse(d.slice('___USAGE___|'.length)));
+      } else if (d.startsWith('___PROJECT___|')) {
+        const s = JSON.parse(d.slice('___PROJECT___|'.length));
+        st.statuses[s.url] = s;
+        if (s.status === 'done' && st.cfg) st.cfg.projects = st.cfg.projects.filter((p) => p !== s.url);
+        renderQueue();
+        renderRun();
+      } else if (d === '___PROCESS_STARTED___') {
+        st.running = true;
+        renderAll();
+      } else if (d === '___PROCESS_STOPPED___') {
+        st.running = false;
+        renderAll();
+      } else {
+        const m = d.match(/^(\d\d:\d\d:\d\d) (.*)$/s);
+        const time = m ? m[1] : '';
+        const text = m ? m[2] : d;
+        addLog(levelOf(text), time, text);
+      }
+    };
+  }
 
-        function renderUsage(u) {
-            const cost = '~$' + u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2) + (u.costIncomplete ? '+' : '');
-            const budget = u.budgetUsd > 0 ? ' / $' + u.budgetUsd.toFixed(2) : '';
-            DOM.usage.textContent = `💰 ${cost}${budget} · in ${fmtTokens(u.inputTokens)} · out ${fmtTokens(u.outputTokens)}`
-                + (u.cacheRead ? ` · кэш ${fmtTokens(u.cacheRead)}` : '')
-                + ` · память ${u.memoryHits} · запросов ${u.requests}`;
-            DOM.usage.classList.toggle('bg-red-600', u.budgetUsd > 0 && u.costUsd >= u.budgetUsd);
-            DOM.usage.classList.remove('hidden');
-        }
+  function renderAll() {
+    renderRun();
+    renderQueue();
+  }
 
-        // SSE For Logs
-        function connectLogs() {
-            const evtSource = new EventSource('/api/logs');
-            evtSource.onmessage = function(event) {
-                // Check for special control messages from server
-                if (event.data.startsWith("___USAGE___|")) {
-                    renderUsage(JSON.parse(event.data.slice("___USAGE___|".length)));
-                } else if (event.data === "___PROCESS_STARTED___") {
-                    updateUIState(true);
-                } else if (event.data === "___PROCESS_STOPPED___") {
-                    updateUIState(false);
-                } else if (event.data.startsWith("___PROJECT_COMPLETED___|")) {
-                    const completedUrl = event.data.slice("___PROJECT_COMPLETED___|".length);
-                    const inputs = Array.from(DOM.projectsContainer.querySelectorAll('.project-url'));
-                    inputs.forEach(input => {
-                        if (input.value.trim() === completedUrl) {
-                            input.parentElement.remove();
-                        }
-                    });
-                    updateProjectsCount();
-                    autoSave();
-                } else {
-                    appendLog(event.data);
-                }
-            };
-            evtSource.onerror = function(err) {
-                // Connection lost or server restarting
-                console.log("SSE error", err);
-            };
-        }
-
-        // Event Listeners
-        DOM.cfgInputs.forEach(input => {
-            input.addEventListener('input', autoSave);
-            input.addEventListener('change', autoSave);
-        });
-        DOM.prompt.addEventListener('input', autoSave);
-        DOM.btnResetPrompt.addEventListener('click', async () => {
-            if (!defaultPrompt) {
-                showToast("Дефолтный промпт не загружен", true);
-                return;
-            }
-            if (DOM.prompt.value.trim() === defaultPrompt.trim()) {
-                showToast("Уже стоит дефолтный промпт");
-                return;
-            }
-            if (!confirm("Заменить текущий промпт дефолтным? Старый текст будет потерян.")) return;
-            DOM.prompt.value = defaultPrompt;
-            try {
-                await saveData(true);
-                showToast("Промпт сброшен на дефолтный");
-                appendLog("✅ Промпт сброшен на дефолтный.");
-            } catch (e) {
-                showToast("Не удалось сохранить промпт", true);
-            }
-        });
-        DOM.btnStart.addEventListener('click', startTask);
-        DOM.btnStop.addEventListener('click', stopTask);
-
-        // Sidebar logic
-        function toggleSidebar() {
-            DOM.sidebar.classList.toggle('collapsed');
-            const isCollapsed = DOM.sidebar.classList.contains('collapsed');
-            localStorage.setItem('sidebar_collapsed', isCollapsed);
-            if (isCollapsed) {
-                DOM.btnExpandSidebar.classList.remove('hidden');
-                DOM.rightTerminal.classList.remove('flex-[2]');
-                DOM.rightTerminal.classList.add('flex-[3]');
-            } else {
-                DOM.btnExpandSidebar.classList.add('hidden');
-                DOM.rightTerminal.classList.remove('flex-[3]');
-                DOM.rightTerminal.classList.add('flex-[2]');
-            }
-        }
-        DOM.btnCollapseSidebar.addEventListener('click', toggleSidebar);
-        DOM.btnExpandSidebar.addEventListener('click', toggleSidebar);
-        if (localStorage.getItem('sidebar_collapsed') === 'true') {
-            DOM.sidebar.classList.add('collapsed');
-            DOM.btnExpandSidebar.classList.remove('hidden');
-            DOM.rightTerminal.classList.remove('flex-[2]');
-            DOM.rightTerminal.classList.add('flex-[3]');
-        }
-        DOM.btnClearLogs.addEventListener('click', () => { DOM.terminal.innerHTML = ''; });
-
-        // Init
-        loadData();
-        connectLogs();
-
-    </script>
+  renderLog();
+  showView(location.hash === '#settings' ? 'settings' : 'main');
+  loadData();
+  connectEvents();
+})();
+</script>
 </body>
 </html>

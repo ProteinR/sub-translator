@@ -97,7 +97,7 @@ const (
 	contextMaxRunes = 400
 )
 
-func processProject(ctx context.Context, page playwright.Page, projectURL string, config Config, tr translator) (string, error) {
+func processProject(ctx context.Context, page playwright.Page, projectURL string, config Config, tr translator, rep *projectReporter) (string, error) {
 	parsedURL, err := url.Parse(projectURL)
 	if err != nil {
 		return "", err
@@ -105,6 +105,7 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 	query := parsedURL.Query()
 	query.Set("view", "multi")
 	parsedURL.RawQuery = query.Encode()
+	rep.detail("Открываю проект в Lokalise…")
 	if _, err := page.Goto(parsedURL.String()); err != nil {
 		return "", err
 	}
@@ -115,6 +116,7 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 	if names, err := page.Locator(".project-document__file-name").AllTextContents(); err == nil && len(names) > 0 {
 		filename = strings.Join(names, ", ")
 	}
+	rep.update(func(s *projectStatus) { s.Name = filename; s.Detail = "Ищу строки для перевода…" })
 
 	collected, err := scrollAndCollect(ctx, page, config, filename)
 	if err != nil {
@@ -122,8 +124,14 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 	}
 	if len(collected) == 0 {
 		slog.Info("ℹ️ Пустых строк не найдено", "url", projectURL)
+		rep.detail("Пустых ячеек нет — переводить нечего")
 		return filename, nil
 	}
+	rep.update(func(s *projectStatus) {
+		s.Total = len(collected)
+		s.Detail = "Перевожу и вставляю · " + targetsOf(collected)
+	})
+	onCell := func() { rep.update(func(s *projectStatus) { s.Done++ }) }
 
 	jobs := buildJobs(collected)
 
@@ -137,14 +145,14 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 		if res.err != nil {
 			return filename, fmt.Errorf("translation error: %w", res.err)
 		}
-		f, err := fillTranslations(ctx, page, res.items, config)
+		f, err := fillTranslations(ctx, page, res.items, config, onCell)
 		failed = append(failed, f...)
 		if err != nil {
 			return filename, err
 		}
 	}
 	if len(failed) > 0 {
-		return filename, fmt.Errorf("не удалось вставить %d строк: %s", len(failed), strings.Join(failed, ", "))
+		return filename, fmt.Errorf("не удалось вставить %d ячеек: %s", len(failed), strings.Join(firstN(failed, 5), ", "))
 	}
 	return filename, nil
 }
@@ -332,7 +340,7 @@ func scrollToTop(ctx context.Context, page playwright.Page) error {
 // fillTranslations вставляет пачку. Упавшие строки не валят весь проект: они
 // возвращаются списком, а проект остаётся в очереди для повторного прогона.
 // Ошибка возвращается только при отмене или если страница явно сломалась.
-func fillTranslations(ctx context.Context, page playwright.Page, items []TranslationItem, config Config) ([]string, error) {
+func fillTranslations(ctx context.Context, page playwright.Page, items []TranslationItem, config Config, onCell func()) ([]string, error) {
 	slog.Info("✍️ Вставка переводов...", "cells", len(items), "langs", targetsOf(items))
 	if err := scrollToTop(ctx, page); err != nil {
 		return nil, err
@@ -354,6 +362,9 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 			}
 			slog.Warn("⚠️ Строка не вставилась", "id", item.ID, "lang", item.TargetLang, "attempt", attempt+1, "error", err)
 			_ = page.Keyboard().Press("Escape") // закрываем возможный зависший редактор
+		}
+		if onCell != nil {
+			onCell()
 		}
 		if err != nil {
 			failed = append(failed, item.ID+"/"+item.TargetLang)

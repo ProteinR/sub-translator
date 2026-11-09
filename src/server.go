@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,6 +24,9 @@ type app struct {
 	runMu   sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+
+	statusMu sync.Mutex
+	statuses map[string]projectStatus
 }
 
 type APIData struct {
@@ -30,6 +35,9 @@ type APIData struct {
 	Version   string     `json:"version"`
 	// Только для чтения: UI берёт отсюда текст для кнопки «Сбросить на дефолтный».
 	DefaultPrompt string `json:"defaultPrompt,omitempty"`
+	// Ключ задан переменной ANTHROPIC_API_KEY — поле в настройках можно не заполнять.
+	EnvAPIKey     bool                     `json:"envApiKey"`
+	ProjectStatus map[string]projectStatus `json:"projectStatus"`
 }
 
 func newApp(cfg *configStore, broker *SSEBroker, port string) *app {
@@ -106,7 +114,14 @@ func (a *app) handleGetData(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(APIData{Config: cfg, IsRunning: a.isRunning(), Version: AppVersion, DefaultPrompt: defaultTranslationPrompt})
+	_ = json.NewEncoder(w).Encode(APIData{
+		Config:        cfg,
+		IsRunning:     a.isRunning(),
+		Version:       AppVersion,
+		DefaultPrompt: defaultTranslationPrompt,
+		EnvAPIKey:     strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != "",
+		ProjectStatus: a.statusSnapshot(),
+	})
 }
 
 func (a *app) handleSaveData(w http.ResponseWriter, r *http.Request) {
