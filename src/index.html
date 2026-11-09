@@ -90,7 +90,7 @@
 
             <div class="bg-gray-50 p-3 rounded border flex flex-col">
                 <div class="flex justify-between items-center mb-2">
-                    <h2 class="font-semibold text-gray-700">Gemini Prompt</h2>
+                    <h2 class="font-semibold text-gray-700">Translation Prompt</h2>
                 </div>
                 <p class="text-xs text-gray-500 mb-2">Общие правила перевода. Исходный язык и все целевые языки берутся из страницы; выбирать направление здесь не нужно.</p>
                 <textarea id="prompt" class="w-full h-48 min-h-[80px] max-h-[600px] border border-gray-300 rounded p-2 text-sm font-mono resize-y focus:ring focus:ring-indigo-200 focus:outline-none"></textarea>
@@ -100,20 +100,12 @@
                 <h2 class="font-semibold text-gray-700 mb-2 border-b pb-1">API Settings</h2>
                 <div class="space-y-2">
                     <div>
-                        <label class="block text-xs font-medium text-gray-500">GEMINI_API_KEY (Primary)</label>
-                        <input type="text" id="cfg_geminiApiKey" class="w-full border rounded p-1.5 text-sm" placeholder="AIzaSy...">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">GEMINI_API_KEY_2 (Backup)</label>
-                        <input type="text" id="cfg_geminiApiKey2" class="w-full border rounded p-1.5 text-sm" placeholder="Optional backup key">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500">GEMINI_API_KEY_3 (Backup 2)</label>
-                        <input type="text" id="cfg_geminiApiKey3" class="w-full border rounded p-1.5 text-sm" placeholder="Optional 3rd backup key">
+                        <label class="block text-xs font-medium text-gray-500">ANTHROPIC_API_KEY</label>
+                        <input type="password" id="cfg_anthropicApiKey" class="w-full border rounded p-1.5 text-sm" placeholder="sk-ant-... (или переменная окружения ANTHROPIC_API_KEY)" autocomplete="off">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">MODEL</label>
-                        <input type="text" id="cfg_model" class="w-full border rounded p-1.5 text-sm" placeholder="gemini-2.5-flash">
+                        <input type="text" id="cfg_model" class="w-full border rounded p-1.5 text-sm" placeholder="claude-haiku-5-5">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500">MAX_CONCURRENCY</label>
@@ -223,6 +215,9 @@
         };
 
         let isRunning = false;
+        // Если конфиг не загрузился, автосейв не должен перетереть файл пустыми полями.
+        let configLoaded = false;
+        const API_HEADERS = {'X-Loka-Request': '1'};
 
         function createProjectInput(value = "") {
             const wrap = document.createElement('div');
@@ -336,6 +331,7 @@
         async function loadData() {
             try {
                 const res = await fetch('/api/data');
+                if (!res.ok) throw new Error(await res.text());
                 const data = await res.json();
                 
                 if(data.config) {
@@ -350,7 +346,6 @@
                         }
                     });
 
-                    window.currentPrompts = data.config.prompts || {};
                     DOM.prompt.value = data.config.translationPrompt || '';
 
                     renderProjects((data.config.projects || []).join('\n'));
@@ -361,6 +356,7 @@
                 }
                 
                 updateUIState(data.isRunning);
+                configLoaded = true;
                 
                 appendLog("✅ Configuration loaded.");
             } catch(e) {
@@ -378,6 +374,12 @@
         }
 
         async function saveData(silent = false) {
+            if (!configLoaded) {
+                const msg = "Конфиг не загружен — сохранение заблокировано, чтобы не потерять настройки. Проверьте data/config.json и перезапустите.";
+                if (!silent) showToast("Save blocked", true);
+                appendLog("❌ " + msg);
+                throw new Error(msg);
+            }
             const config = {};
             DOM.cfgInputs.forEach(input => {
                 const key = input.id.replace('cfg_', '');
@@ -391,7 +393,6 @@
             });
 
             config.projects = getProjectList();
-            config.prompts = window.currentPrompts || {};
             config.translationPrompt = DOM.prompt.value;
 
             const payload = { config };
@@ -399,7 +400,7 @@
             try {
                 const res = await fetch('/api/save', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
+                    headers: {...API_HEADERS, 'Content-Type': 'application/json'},
                     body: JSON.stringify(payload)
                 });
                 
@@ -422,7 +423,7 @@
                 DOM.btnStart.disabled = true;
                 DOM.btnStart.innerHTML = '<span class="spinner"></span> Starting...';
 
-                const res = await fetch('/api/start', { method: 'POST' });
+                const res = await fetch('/api/start', { method: 'POST', headers: API_HEADERS });
                 if(res.ok) {
                     updateUIState(true);
                     showToast("Translation started!");
@@ -439,7 +440,7 @@
 
         async function stopTask() {
             try {
-                const res = await fetch('/api/stop', { method: 'POST' });
+                const res = await fetch('/api/stop', { method: 'POST', headers: API_HEADERS });
                 if(res.ok) {
                     showToast("Stop signal sent");
                     appendLog("🛑 Sending stop signal...");
@@ -472,7 +473,7 @@
                 } else if (event.data === "___PROCESS_STOPPED___") {
                     updateUIState(false);
                 } else if (event.data.startsWith("___PROJECT_COMPLETED___|")) {
-                    const completedUrl = event.data.split("|")[1];
+                    const completedUrl = event.data.slice("___PROJECT_COMPLETED___|".length);
                     const inputs = Array.from(DOM.projectsContainer.querySelectorAll('.project-url'));
                     inputs.forEach(input => {
                         if (input.value.trim() === completedUrl) {
