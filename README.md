@@ -101,7 +101,7 @@ scripts/release.sh 3.2.0 "Что нового — этот текст увидя
 
 *   `Start Loka Translator.app`: запуск двойным кликом (обновление, сборка, запуск).
 *   `Loka Translator.app`: само приложение, собирается `src/build-app.sh` (в git не хранится).
-*   `scripts/release.sh`: выпуск версии на GitHub.
+*   `scripts/release.sh`: выпуск версии на GitHub; `scripts/make-icon.sh` — пересборка иконки из `src/icon/AppIcon.svg`.
 *   `src/`: Исходный код и скрипт запуска:
     *   `main.go` — точка входа, HTTP-сервер;
     *   `server.go` — API, защита от CSRF/DNS rebinding, поток логов;
