@@ -5,3 +5,4 @@ Loka Translator.app/
 
 # Ignore local data
 data/
+dist/

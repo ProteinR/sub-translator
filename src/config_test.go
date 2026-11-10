@@ -10,10 +10,10 @@ import (
 	"testing"
 )
 
-func TestConfigMigratesGeminiModelAndDedupesProjects(t *testing.T) {
+func TestConfigFixesUnknownModelAndDedupesProjects(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	os.WriteFile(path, []byte(`{"geminiApiKey":"AIza-old","model":"gemini-2.5-flash","projects":[" a ","a","","b"],"maxConcurrency":0}`), 0o600)
+	os.WriteFile(path, []byte(`{"model":"gpt-4o","projects":[" a ","a","","b"],"maxConcurrency":0}`), 0o600)
 
 	cfg, err := newConfigStore(path).Load()
 	if err != nil {

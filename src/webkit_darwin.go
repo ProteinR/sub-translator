@@ -62,6 +62,8 @@ func (e *webkitEngine) setTitle(id int, title string) {
 	withCString(title, func(t *C.char) { C.loka_tab_title(C.int(id), t) })
 }
 
+func quitApp() { C.loka_quit() }
+
 func (e *webkitEngine) selectTab(id int) { C.loka_tab_select(C.int(id)) }
 func (e *webkitEngine) closeTab(id int)  { C.loka_tab_close(C.int(id)) }
 func (e *webkitEngine) activate()        { C.loka_activate() }

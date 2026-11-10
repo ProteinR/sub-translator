@@ -331,3 +331,7 @@ void loka_set_busy(int busy) {
       }
     });
 }
+
+void loka_quit(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+}

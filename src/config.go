@@ -100,12 +100,11 @@ func defaultConfig() FileConfig {
 func normalizeConfig(cfg *FileConfig) {
 	cfg.AnthropicAPIKey = strings.TrimSpace(cfg.AnthropicAPIKey)
 	cfg.Model = strings.TrimSpace(cfg.Model)
-	// Старые конфиги были на Gemini — такая модель в Anthropic API не существует.
-	if cfg.Model == "" || strings.HasPrefix(strings.ToLower(cfg.Model), "gemini") {
+	if !isClaudeModel(cfg.Model) {
 		cfg.Model = defaultModel
 	}
 	cfg.FallbackModel = strings.TrimSpace(cfg.FallbackModel)
-	if cfg.FallbackModel == "" || strings.HasPrefix(strings.ToLower(cfg.FallbackModel), "gemini") {
+	if cfg.FallbackModel != noFallbackModel && !isClaudeModel(cfg.FallbackModel) {
 		cfg.FallbackModel = defaultFallbackModel
 	}
 	if cfg.BudgetUSD < 0 {
@@ -132,6 +131,9 @@ func normalizeConfig(cfg *FileConfig) {
 	}
 	cfg.Projects = projects
 }
+
+// isClaudeModel отсекает пустые и чужие названия моделей (их Anthropic API не примет).
+func isClaudeModel(m string) bool { return strings.HasPrefix(strings.ToLower(m), "claude-") }
 
 func clamp(v, lo, hi int) int {
 	return max(lo, min(v, hi))

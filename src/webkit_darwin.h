@@ -11,3 +11,4 @@ void loka_tab_select(int tab);
 void loka_tab_close(int tab);
 void loka_activate(void);
 void loka_set_busy(int busy);
+void loka_quit(void);

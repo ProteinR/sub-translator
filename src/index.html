@@ -59,6 +59,13 @@
   .banner .t { font-weight: 600; color: #7C2D12; }
   .banner .d { font-size: 14px; color: var(--warn-fg); }
   .banner .btn { background: var(--warn-strong); border: none; color: #FFF; font-weight: 600; }
+  .banner.upd { background: var(--run-bg); border-color: #93C5FD; }
+  .banner.upd .t { color: var(--accent-ink); }
+  .banner.upd .d { color: var(--run-fg); white-space: pre-line; }
+  .banner.upd .btn { background: var(--accent); }
+  .banner.upd .btn:disabled { opacity: .6; }
+  button.version { background: none; border: none; padding: 2px 4px; cursor: pointer; border-radius: 6px; }
+  button.version:hover { background: var(--line-soft); }
 
   .run { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; }
   .run-text { flex: 1 1 360px; }
@@ -144,7 +151,7 @@
 
 <header class="top">
   <div class="top-inner">
-    <div class="brand"><b>Loka Translator</b><span class="version" id="version"></span></div>
+    <div class="brand"><b>Loka Translator</b><button type="button" class="version" id="version" title="Проверить обновления"></button></div>
     <div class="usage" id="usage" title="Расход текущего или последнего запуска" hidden></div>
     <button type="button" class="btn" id="navSettings">
       <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -167,6 +174,15 @@
       <div class="d">Без него перевод не запустится. Ключ создаётся в Claude Console.</div>
     </div>
     <button type="button" class="btn" id="bannerToSettings">Указать ключ</button>
+  </div>
+
+  <div class="banner upd" id="bannerUpdate" role="status" hidden>
+    <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+    <div style="flex: 1 1 320px">
+      <div class="t" id="updTitle"></div>
+      <div class="d" id="updText"></div>
+    </div>
+    <button type="button" class="btn" id="updInstall">Обновить</button>
   </div>
 
   <section class="card pad run" aria-labelledby="runTitle">
@@ -798,12 +814,55 @@
   function renderAll() {
     renderRun();
     renderQueue();
+    renderUpdate();
   }
+
+  // ---------- обновления ----------
+  let upd = null;
+  async function checkUpdate(force) {
+    try {
+      const res = await fetch('/api/update' + (force ? '?force=1' : ''));
+      upd = await res.json();
+    } catch (e) { upd = null; }
+    renderUpdate();
+    if (force && upd) {
+      if (upd.error) addLog('warn', '', 'Проверка обновлений: ' + upd.error);
+      else if (!upd.available) addLog('info', '', 'Установлена последняя версия (' + upd.current + ').');
+    }
+  }
+  function renderUpdate() {
+    const show = !!(upd && upd.available);
+    $('bannerUpdate').hidden = !show;
+    if (!show) return;
+    $('updTitle').textContent = 'Доступна версия ' + upd.latest + ' (сейчас ' + upd.current + ')';
+    $('updText').textContent = upd.canInstall ? (upd.notes || '') : 'Запущено из исходников — обновите через git pull и start.sh.';
+    $('updInstall').hidden = !upd.canInstall;
+    $('updInstall').disabled = st.running;
+    $('updInstall').title = st.running ? 'Дождитесь конца перевода' : '';
+  }
+  $('version').onclick = () => checkUpdate(true);
+  $('updInstall').onclick = async () => {
+    const btn = $('updInstall');
+    btn.disabled = true;
+    btn.textContent = 'Скачиваю…';
+    try {
+      const res = await fetch('/api/update/install', { method: 'POST', headers: API_HEADERS });
+      if (!res.ok) throw new Error(await res.text());
+      btn.textContent = 'Перезапуск…';
+      $('updText').textContent = 'Новая версия установлена, приложение сейчас откроется заново.';
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Обновить';
+      addLog('error', '', 'Обновление не установлено: ' + e.message);
+    }
+  };
 
   renderLog();
   showView(location.hash === '#settings' ? 'settings' : 'main');
   loadData();
   connectEvents();
+  checkUpdate(false);
+  setInterval(() => checkUpdate(false), 6 * 3600 * 1000);
 })();
 </script>
 </body>

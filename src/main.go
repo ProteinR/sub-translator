@@ -14,17 +14,23 @@ import (
 //go:embed index.html
 var indexHTML []byte
 
-const AppVersion = "3.0.0"
+// var, а не const: build-app.sh может подменить версию (APP_VERSION) для проверки обновлений.
+var AppVersion = "3.0.0"
 
 const defaultPort = "8080"
 
 func main() {
-	if exePath, err := os.Executable(); err == nil {
+	if app := currentBundle(); app != "" {
+		// Установленное приложение (хоть в /Applications) хранит данные у пользователя.
+		if home, err := os.UserHomeDir(); err == nil {
+			dir := filepath.Join(home, "Library", "Application Support", "Loka Translator")
+			_ = os.MkdirAll(filepath.Join(dir, "data"), 0o700)
+			migrateData(filepath.Join(filepath.Dir(app), "data"), filepath.Join(dir, "data"))
+			_ = os.Chdir(dir)
+		}
+	} else if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
-		// Внутри «Loka Translator.app/Contents/MacOS» данные лежат рядом с самим .app.
-		if filepath.Base(exeDir) == "MacOS" && strings.HasSuffix(filepath.Dir(filepath.Dir(exeDir)), ".app") {
-			_ = os.Chdir(filepath.Dir(filepath.Dir(filepath.Dir(exeDir))))
-		} else if !strings.Contains(exeDir, "go-build") && !strings.Contains(exeDir, "Temp") && !strings.Contains(exeDir, "tmp") {
+		if !strings.Contains(exeDir, "go-build") && !strings.Contains(exeDir, "Temp") && !strings.Contains(exeDir, "tmp") {
 			_ = os.Chdir(exeDir)
 		}
 	}
@@ -74,4 +80,19 @@ func main() {
 	}
 	go openBrowser(uiURL)
 	select {}
+}
+
+// migrateData один раз переносит настройки и память переводов из папки data
+// рядом с .app (так было до версии 3.1) в папку пользователя.
+func migrateData(from, to string) {
+	if _, err := os.Stat(filepath.Join(to, "config.json")); err == nil {
+		return
+	}
+	for _, name := range []string{"config.json", "tm.jsonl"} {
+		data, err := os.ReadFile(filepath.Join(from, name))
+		if err != nil {
+			continue
+		}
+		_ = os.WriteFile(filepath.Join(to, name), data, 0o600)
+	}
 }

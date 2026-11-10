@@ -2,7 +2,10 @@
 
 package main
 
-import "context"
+import (
+	"context"
+	"os"
+)
 
 const hasNativeWindow = false
 
@@ -13,6 +16,8 @@ type noEngine struct{}
 func defaultEngine() tabEngine { return noEngine{} }
 
 func runNativeWindow(string) { select {} }
+
+func quitApp() { os.Exit(0) }
 
 func (noEngine) newTab(int, string)   {}
 func (noEngine) navigate(int, string) {}

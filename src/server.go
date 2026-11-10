@@ -28,9 +28,10 @@ type app struct {
 	statusMu sync.Mutex
 	statuses map[string]projectStatus
 
-	eng    tabEngine
-	tabsMu sync.Mutex
-	tabs   []*browserTab
+	eng     tabEngine
+	updates *updater
+	tabsMu  sync.Mutex
+	tabs    []*browserTab
 }
 
 type APIData struct {
@@ -45,7 +46,7 @@ type APIData struct {
 }
 
 func newApp(cfg *configStore, broker *SSEBroker, port string) *app {
-	return &app{cfg: cfg, broker: broker, port: port, eng: defaultEngine()}
+	return &app{cfg: cfg, broker: broker, port: port, eng: defaultEngine(), updates: newUpdater(quitApp)}
 }
 
 func (a *app) routes() http.Handler {
@@ -60,6 +61,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/start", a.handleStart)
 	mux.HandleFunc("POST /api/stop", a.handleStop)
 	mux.HandleFunc("GET /api/logs", a.handleLogs)
+	mux.HandleFunc("GET /api/update", a.handleUpdateCheck)
+	mux.HandleFunc("POST /api/update/install", a.handleUpdateInstall)
 	if os.Getenv("LOKA_DEBUG") == "1" {
 		mux.HandleFunc("POST /api/debug/eval", a.handleDebugEval)
 	}
@@ -259,4 +262,29 @@ func (a *app) handleDebugEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write([]byte(out))
+}
+
+func (a *app) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	info := a.updates.Check(ctx, r.URL.Query().Get("force") == "1")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(info)
+}
+
+func (a *app) handleUpdateInstall(w http.ResponseWriter, r *http.Request) {
+	if a.isRunning() {
+		http.Error(w, "Идёт перевод — остановите его или дождитесь конца, затем обновите", http.StatusConflict)
+		return
+	}
+	// Не привязываем к запросу: закрытие панели не должно оборвать установку.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := a.updates.Install(ctx); err != nil {
+		slog.Error("❌ Обновление не установлено", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
