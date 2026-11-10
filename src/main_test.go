@@ -1,11 +1,8 @@
 package main
 
 import (
-	"context"
-	"os"
+	"slices"
 	"testing"
-
-	"github.com/playwright-community/playwright-go"
 )
 
 func TestCheckTranslation(t *testing.T) {
@@ -35,84 +32,44 @@ func TestCheckTranslation(t *testing.T) {
 	}
 }
 
-// Opt-in browser regression test; uses a local saved page, never a live project.
-func TestMultilingualHTML(t *testing.T) {
-	fixture := os.Getenv("LOKALISE_HTML_FIXTURE")
-	if fixture == "" {
-		t.Skip("set LOKALISE_HTML_FIXTURE to saved Multilingual HTML")
+func TestItemsFromRow(t *testing.T) {
+	row := scannedRow{ID: "1", File: "a.srt", BaseCount: 1, SourceLang: "English", SourceID: "640", Source: "Hello",
+		Targets: []scannedTarget{{LangID: "748", Lang: "Polish"}, {LangID: "597", Lang: "Russian", Value: "Привет"}, {LangID: "769", Lang: "Ukrainian", Value: " "}}}
+	items, err := itemsFromRow(row, false)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("empty cells: got %d, %v", len(items), err)
 	}
-	html, err := os.ReadFile(fixture)
-	if err != nil {
-		t.Fatal(err)
+	if items[0].TargetLang != "Polish" || items[0].TargetID != "748" || items[0].SourceLang != "English" || items[0].Filename != "a.srt" {
+		t.Fatalf("wrong metadata: %+v", items[0])
 	}
-	pw, err := playwright.Run()
-	if err != nil {
-		t.Fatal(err)
+	if items, _ := itemsFromRow(row, true); len(items) != 3 {
+		t.Fatalf("overwrite: got %d", len(items))
 	}
-	defer pw.Stop()
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{Headless: playwright.Bool(true)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer browser.Close()
-	page, err := browser.NewPage(playwright.BrowserNewPageOptions{JavaScriptEnabled: playwright.Bool(false)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Scripts in the attached HTML are data, not test instructions.
-	err = page.Route("**/*", func(route playwright.Route) { _ = route.Abort() })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := page.SetContent(string(html)); err != nil {
-		t.Fatal(err)
-	}
-	count, _ := page.Locator(".row-key[data-id]").Count()
-	if count == 0 {
-		t.Fatal("fixture has no rows")
+	empty := row
+	empty.Source = "  "
+	if items, _ := itemsFromRow(empty, true); len(items) != 0 {
+		t.Fatal("empty source must be skipped")
 	}
 
-	cfg := Config{}
-	items, err := scrollAndCollect(context.Background(), page, cfg, "fixture")
-	if err != nil || len(items) != count*3 {
-		t.Fatalf("got %d of %d: %v", len(items), count*3, err)
+	bad := []func(r *scannedRow){
+		func(r *scannedRow) { r.BaseCount = 0 },
+		func(r *scannedRow) { r.SourceLang = "" },
+		func(r *scannedRow) { r.Targets = nil },
+		func(r *scannedRow) { r.Targets = []scannedTarget{{LangID: "x", Lang: "Polish"}} },
+		func(r *scannedRow) { r.Targets = []scannedTarget{{LangID: "640", Lang: "English"}} },
+		func(r *scannedRow) {
+			r.Targets = []scannedTarget{{LangID: "1", Lang: "Polish"}, {LangID: "2", Lang: "Polish"}}
+		},
+		func(r *scannedRow) {
+			r.Targets = []scannedTarget{{LangID: "1", Lang: "Polish"}, {LangID: "1", Lang: "Polish 2"}}
+		},
 	}
-	directions := map[string]string{}
-	for _, item := range items {
-		if item.SourceLang != "English" || item.Original == "" || item.Filename == "" {
-			t.Fatalf("missing metadata: %+v", item)
+	for i, mod := range bad {
+		r := row
+		r.Targets = slices.Clone(row.Targets)
+		mod(&r)
+		if _, err := itemsFromRow(r, false); err == nil {
+			t.Errorf("case %d accepted", i)
 		}
-		directions[item.TargetID] = item.TargetLang
-	}
-	if directions["748"] != "Polish" || directions["597"] != "Russian" || directions["769"] != "Ukrainian" {
-		t.Fatalf("wrong directions: %v", directions)
-	}
-	cell := page.Locator(".row-key[data-id]").First().Locator(targetCellSelector("748"))
-	if _, err := cell.Locator("[data-lokalise-editor-value]").Evaluate("el => el.setAttribute('data-lokalise-editor-value', 'Existing')", nil); err != nil {
-		t.Fatal(err)
-	}
-	items, err = scrollAndCollect(context.Background(), page, cfg, "fixture")
-	if err != nil || len(items) != count*3-1 {
-		t.Fatalf("filled cell not skipped: %v", err)
-	}
-	cfg.OverwriteFilled = true
-	items, err = scrollAndCollect(context.Background(), page, cfg, "fixture")
-	if err != nil || len(items) != count*3 {
-		t.Fatalf("overwrite failed: %v", err)
-	}
-	// A different source and a previously unknown target must work without any configuration.
-	_, err = page.Evaluate(`() => {
-  document.querySelectorAll(".key-translation[data-is-base='1']").forEach(el => {el.setAttribute('data-lang', 'German'); el.setAttribute('data-lang-id', '999');});
-  document.querySelectorAll(".key-translation[data-lang-id='748']").forEach(el => {el.setAttribute('data-lang', 'Spanish'); el.setAttribute('data-lang-id', '888');});
- }`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	items, err = scrollAndCollect(context.Background(), page, cfg, "fixture")
-	if err != nil || len(items) != count*3 {
-		t.Fatalf("dynamic languages failed: %v", err)
-	}
-	if items[0].SourceLang != "German" || items[0].TargetLang != "Spanish" || items[0].TargetID != "888" {
-		t.Fatalf("hardcoded direction: %+v", items[0])
 	}
 }

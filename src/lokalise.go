@@ -8,77 +8,19 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/playwright-community/playwright-go"
 )
 
 const (
-	authStatePath  = "data/auth.json"
-	editorSelector = ".ace_text-input, textarea:not([style*='display: none']), [contenteditable='true']"
-	rowAttempts    = 2 // попытки вставки одной строки
+	rowAttempts = 2 // попытки вставки одной строки
 	// Столько подряд упавших строк — и считаем, что страница сломалась.
 	maxConsecutiveRowFailures = 5
+	loginTimeout              = 10 * time.Minute
+	evalTimeout               = 30 * time.Second
 )
-
-func ensureLogin(ctx context.Context, browser playwright.Browser, checkURL string) (playwright.BrowserContext, playwright.Page, error) {
-	var opts playwright.BrowserNewContextOptions
-	if _, err := os.Stat(authStatePath); err == nil {
-		slog.Info("🔑 Найден файл авторизации, проверяем...")
-		opts.StorageStatePath = playwright.String(authStatePath)
-	}
-
-	bctx, err := browser.NewContext(opts)
-	if err != nil {
-		return nil, nil, err
-	}
-	page, err := bctx.NewPage()
-	if err != nil {
-		bctx.Close()
-		return nil, nil, err
-	}
-	if _, err = page.Goto(checkURL); err != nil {
-		bctx.Close()
-		return nil, nil, err
-	}
-
-	loginHeader := page.Locator("h1", playwright.PageLocatorOptions{HasText: "Log in"})
-	if err := loginHeader.WaitFor(playwright.LocatorWaitForOptions{Timeout: playwright.Float(5000)}); err != nil {
-		slog.Info("✅ Куки валидны, вход не требуется.")
-		return bctx, page, nil
-	}
-
-	slog.Warn("⚠️ Требуется вход. Пожалуйста, залогиньтесь в открывшемся окне браузера!")
-	// Раньше тут был Click с дефолтным таймаутом 30с, если баннера нет — минус полминуты.
-	_ = page.Locator("[id='onetrust-accept-btn-handler']").Click(playwright.LocatorClickOptions{Timeout: playwright.Float(2000)})
-
-	deadline := time.Now().Add(3 * time.Minute)
-	for {
-		if count, _ := loginHeader.Count(); count == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			bctx.Close()
-			return nil, nil, errors.New("превышено время ожидания авторизации")
-		}
-		if err := sleepCtx(ctx, time.Second); err != nil {
-			bctx.Close()
-			return nil, nil, err
-		}
-	}
-
-	if _, err := bctx.StorageState(authStatePath); err != nil {
-		bctx.Close()
-		return nil, nil, fmt.Errorf("could not save storage state: %w", err)
-	}
-	_ = os.Chmod(authStatePath, 0o600)
-	slog.Info("💾 Авторизация сохранена")
-	return bctx, page, nil
-}
 
 type translationJob struct {
 	group string // документ + исходный язык: внутри группы тянем контекст
@@ -97,28 +39,91 @@ const (
 	contextMaxRunes = 400
 )
 
-func processProject(ctx context.Context, page playwright.Page, projectURL string, config Config, tr translator, rep *projectReporter) (string, error) {
+type pageState struct {
+	URL   string   `json:"url"`
+	Ready string   `json:"ready"`
+	Rows  int      `json:"rows"`
+	Login bool     `json:"login"`
+	Files []string `json:"files"`
+}
+
+func (t *browserTab) call(ctx context.Context, op string, args, out any) error {
+	cctx, cancel := context.WithTimeout(ctx, evalTimeout)
+	defer cancel()
+	return t.Call(cctx, op, args, out)
+}
+
+// openProject открывает проект в Multilingual и ждёт строки. Если Lokalise просит
+// войти — показывает вкладку и ждёт, пока пользователь залогинится в окне.
+func openProject(ctx context.Context, tab *browserTab, projectURL string, rep *projectReporter) (pageState, error) {
 	parsedURL, err := url.Parse(projectURL)
 	if err != nil {
-		return "", err
+		return pageState{}, err
 	}
 	query := parsedURL.Query()
 	query.Set("view", "multi")
 	parsedURL.RawQuery = query.Encode()
+	target := parsedURL.String()
+
 	rep.detail("Открываю проект в Lokalise…")
-	if _, err := page.Goto(parsedURL.String()); err != nil {
+	tab.Navigate(target)
+	if err := sleepCtx(ctx, time.Second); err != nil {
+		return pageState{}, err
+	}
+
+	deadline := time.Now().Add(60 * time.Second)
+	askedLogin := false
+	lastNav := time.Now()
+	var st pageState
+	for {
+		err := tab.call(ctx, "state", nil, &st)
+		if ctx.Err() != nil {
+			return st, ctx.Err()
+		}
+		onLogin := err == nil && (st.Login || strings.Contains(st.URL, "/login"))
+		switch {
+		case err == nil && st.Rows > 0:
+			if askedLogin {
+				slog.Info("✅ Вход выполнен")
+			}
+			return st, nil
+		case onLogin && !askedLogin:
+			askedLogin = true
+			deadline = time.Now().Add(loginTimeout)
+			slog.Warn("⚠️ Требуется вход. Войдите в Lokalise во вкладке окна приложения.")
+			rep.detail("Нужен вход в Lokalise — войдите во вкладке этого потока")
+			tab.Show()
+		case askedLogin && err == nil && !onLogin && st.Ready == "complete" &&
+			!strings.Contains(st.URL, parsedURL.Path) && time.Since(lastNav) > 10*time.Second:
+			// Вошли, но Lokalise привёл на дашборд — открываем проект заново.
+			tab.Navigate(target)
+			lastNav = time.Now()
+		}
+		if time.Now().After(deadline) {
+			if askedLogin {
+				return st, errors.New("превышено время ожидания входа в Lokalise")
+			}
+			return st, fmt.Errorf("не найдены строки Multilingual (адрес %s)", st.URL)
+		}
+		if err := sleepCtx(ctx, 700*time.Millisecond); err != nil {
+			return st, err
+		}
+	}
+}
+
+func processProject(ctx context.Context, tab *browserTab, projectURL string, config Config, tr translator, rep *projectReporter) (string, error) {
+	st, err := openProject(ctx, tab, projectURL, rep)
+	if err != nil {
 		return "", err
 	}
-	if err := page.Locator(".row-key[data-id]").First().WaitFor(playwright.LocatorWaitForOptions{Timeout: playwright.Float(60000)}); err != nil {
-		return "", fmt.Errorf("не найдены строки Multilingual: %w", err)
-	}
 	filename := projectURL
-	if names, err := page.Locator(".project-document__file-name").AllTextContents(); err == nil && len(names) > 0 {
-		filename = strings.Join(names, ", ")
+	if len(st.Files) > 0 {
+		filename = strings.Join(st.Files, ", ")
 	}
+	tab.SetTitle(filename)
 	rep.update(func(s *projectStatus) { s.Name = filename; s.Detail = "Ищу строки для перевода…" })
 
-	collected, err := scrollAndCollect(ctx, page, config, filename)
+	collected, err := scrollAndCollect(ctx, tab, config, filename)
 	if err != nil {
 		return filename, fmt.Errorf("scroll error: %w", err)
 	}
@@ -145,7 +150,7 @@ func processProject(ctx context.Context, page playwright.Page, projectURL string
 		if res.err != nil {
 			return filename, fmt.Errorf("translation error: %w", res.err)
 		}
-		f, err := fillTranslations(ctx, page, res.items, config, onCell)
+		f, err := fillTranslations(ctx, tab, res.items, config, onCell)
 		failed = append(failed, f...)
 		if err != nil {
 			return filename, err
@@ -228,7 +233,60 @@ func contextFrom(items []TranslationItem, n int) []contextRow {
 	return rows
 }
 
-func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, filename string) ([]TranslationItem, error) {
+type scannedTarget struct {
+	LangID string `json:"langId"`
+	Lang   string `json:"lang"`
+	Value  string `json:"value"`
+}
+
+type scannedRow struct {
+	ID         string          `json:"id"`
+	File       string          `json:"file"`
+	BaseCount  int             `json:"baseCount"`
+	SourceLang string          `json:"sourceLang"`
+	SourceID   string          `json:"sourceId"`
+	Source     string          `json:"source"`
+	Targets    []scannedTarget `json:"targets"`
+}
+
+// itemsFromRow проверяет строку Lokalise и возвращает ячейки, которые надо перевести.
+func itemsFromRow(row scannedRow, overwrite bool) ([]TranslationItem, error) {
+	id := row.ID
+	if row.BaseCount != 1 {
+		return nil, fmt.Errorf("строка %s: исходный язык не определён", id)
+	}
+	if strings.TrimSpace(row.SourceLang) == "" {
+		return nil, fmt.Errorf("строка %s: отсутствует название исходного языка", id)
+	}
+	if len(row.Targets) == 0 {
+		return nil, fmt.Errorf("строка %s: нет целевых языков; проверьте фильтр языков Lokalise", id)
+	}
+	var out []TranslationItem
+	seenLanguages := map[string]bool{}
+	seenNames := map[string]bool{}
+	for _, t := range row.Targets {
+		if _, err := strconv.ParseUint(t.LangID, 10, 64); err != nil || t.Lang == "" || t.LangID == row.SourceID || seenLanguages[t.LangID] {
+			return nil, fmt.Errorf("строка %s: некорректные данные целевого языка", id)
+		}
+		if seenNames[t.Lang] {
+			return nil, fmt.Errorf("строка %s: два целевых языка с одинаковым названием %q", id, t.Lang)
+		}
+		seenLanguages[t.LangID] = true
+		seenNames[t.Lang] = true
+		if strings.TrimSpace(row.Source) != "" && (strings.TrimSpace(t.Value) == "" || overwrite) {
+			out = append(out, TranslationItem{ID: id, Original: row.Source, Filename: row.File, SourceLang: row.SourceLang, TargetLang: t.Lang, TargetID: t.LangID})
+		}
+	}
+	return out, nil
+}
+
+type scrollResult struct {
+	Top   float64 `json:"top"`
+	Moved bool    `json:"moved"`
+	Max   float64 `json:"max"`
+}
+
+func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filename string) ([]TranslationItem, error) {
 	var results []TranslationItem
 	seen := make(map[string]bool)
 
@@ -240,86 +298,54 @@ func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, 
 		modeLog = "всех"
 	}
 	slog.Info(fmt.Sprintf("🔍 Начинаю поиск %s строк", modeLog), "file", filename)
+	if err := tab.call(ctx, "top", nil, nil); err != nil {
+		return nil, err
+	}
 
 	for noNewElementsCount < maxNoNewRetries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 
-		newAddedThisStep := 0
-		rows, err := page.Locator(".row-key[data-id]").All()
-		if err != nil {
+		var rows []scannedRow
+		if err := tab.call(ctx, "scan", nil, &rows); err != nil {
 			return nil, err
 		}
-
+		newAddedThisStep := 0
 		for _, row := range rows {
-			id, _ := row.GetAttribute("data-id")
-			if id == "" || seen[id] {
+			if row.ID == "" || seen[row.ID] {
 				continue
 			}
-			seen[id] = true
+			seen[row.ID] = true
 			newAddedThisStep++
-
-			source := row.Locator(".key-translation[data-is-base='1']")
-			if count, _ := source.Count(); count != 1 {
-				return nil, fmt.Errorf("строка %s: исходный язык не определён", id)
-			}
-			sourceName, err := source.GetAttribute("data-lang")
-			if err != nil || strings.TrimSpace(sourceName) == "" {
-				return nil, fmt.Errorf("строка %s: отсутствует название исходного языка", id)
-			}
-			sourceID, _ := source.GetAttribute("data-lang-id")
-			originalText, err := cellValue(source)
+			items, err := itemsFromRow(row, config.OverwriteFilled)
 			if err != nil {
 				return nil, err
 			}
-			targets, err := row.Locator(".key-translation:not([data-is-base='1'])").All()
-			if err != nil {
-				return nil, err
-			}
-			if len(targets) == 0 {
-				return nil, fmt.Errorf("строка %s: нет целевых языков; проверьте фильтр языков Lokalise", id)
-			}
-			rowFile, _ := row.GetAttribute("data-filename")
-			seenLanguages := map[string]bool{}
-			seenNames := map[string]bool{}
-			for _, target := range targets {
-				targetID, _ := target.GetAttribute("data-lang-id")
-				targetName, _ := target.GetAttribute("data-lang")
-				if _, err := strconv.ParseUint(targetID, 10, 64); err != nil || targetName == "" || targetID == sourceID || seenLanguages[targetID] {
-					return nil, fmt.Errorf("строка %s: некорректные данные целевого языка", id)
-				}
-				if seenNames[targetName] {
-					return nil, fmt.Errorf("строка %s: два целевых языка с одинаковым названием %q", id, targetName)
-				}
-				seenLanguages[targetID] = true
-				seenNames[targetName] = true
-				cellText, err := cellValue(target)
-				if err != nil {
-					return nil, err
-				}
-				if strings.TrimSpace(originalText) != "" && (strings.TrimSpace(cellText) == "" || config.OverwriteFilled) {
-					results = append(results, TranslationItem{ID: id, Original: originalText, Filename: rowFile, SourceLang: sourceName, TargetLang: targetName, TargetID: targetID})
-				}
-			}
+			results = append(results, items...)
 		}
 
+		var sr scrollResult
+		if err := tab.call(ctx, "scroll", map[string]int{"dy": 800}, &sr); err != nil {
+			return nil, err
+		}
 		if newAddedThisStep > 0 {
 			noNewElementsCount = 0
 		} else {
 			noNewElementsCount++
 		}
-
-		_ = page.Mouse().Wheel(0, 800)
+		if !sr.Moved && newAddedThisStep == 0 {
+			// Дошли до конца: ждём один раз подгрузку и выходим быстрее, чем через 5 шагов.
+			noNewElementsCount += 2
+		}
 		if err := sleepCtx(ctx, config.ScrollDelay); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := scrollToTop(ctx, page); err != nil {
+	if err := tab.call(ctx, "top", nil, nil); err != nil {
 		return nil, err
 	}
-
 	if len(seen) == 0 {
 		return nil, errors.New("не найдено строк для обработки")
 	}
@@ -327,24 +353,11 @@ func scrollAndCollect(ctx context.Context, page playwright.Page, config Config, 
 	return results, nil
 }
 
-func scrollToTop(ctx context.Context, page playwright.Page) error {
-	for i := 0; i < 40; i++ {
-		_ = page.Mouse().Wheel(0, -3000)
-		if err := sleepCtx(ctx, 20*time.Millisecond); err != nil {
-			return err
-		}
-	}
-	return sleepCtx(ctx, 300*time.Millisecond)
-}
-
 // fillTranslations вставляет пачку. Упавшие строки не валят весь проект: они
 // возвращаются списком, а проект остаётся в очереди для повторного прогона.
 // Ошибка возвращается только при отмене или если страница явно сломалась.
-func fillTranslations(ctx context.Context, page playwright.Page, items []TranslationItem, config Config, onCell func()) ([]string, error) {
+func fillTranslations(ctx context.Context, tab *browserTab, items []TranslationItem, config Config, onCell func()) ([]string, error) {
 	slog.Info("✍️ Вставка переводов...", "cells", len(items), "langs", targetsOf(items))
-	if err := scrollToTop(ctx, page); err != nil {
-		return nil, err
-	}
 
 	var failed []string
 	consecutive := 0
@@ -354,19 +367,20 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 			if err = ctx.Err(); err != nil {
 				return failed, err
 			}
-			if err = fillRow(ctx, page, item, config, attempt); err == nil {
+			if err = fillRow(ctx, tab, item, config, attempt); err == nil {
 				break
 			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) {
 				return failed, err
 			}
 			slog.Warn("⚠️ Строка не вставилась", "id", item.ID, "lang", item.TargetLang, "attempt", attempt+1, "error", err)
-			_ = page.Keyboard().Press("Escape") // закрываем возможный зависший редактор
+			_ = tab.call(ctx, "escape", nil, nil) // закрываем возможный зависший редактор
 		}
 		if onCell != nil {
 			onCell()
 		}
 		if err != nil {
+			saveDebugSnapshot(ctx, tab, "error_fill")
 			failed = append(failed, item.ID+"/"+item.TargetLang)
 			consecutive++
 			if consecutive >= maxConsecutiveRowFailures {
@@ -379,159 +393,87 @@ func fillTranslations(ctx context.Context, page playwright.Page, items []Transla
 	return failed, nil
 }
 
-func fillRow(ctx context.Context, page playwright.Page, item TranslationItem, config Config, attempt int) error {
-	row, err := findRow(ctx, page, item.ID)
-	if err != nil {
+type fillResult struct {
+	Status string `json:"status"`
+	Kind   string `json:"kind"`
+}
+
+func fillRow(ctx context.Context, tab *browserTab, item TranslationItem, config Config, attempt int) error {
+	if err := findRow(ctx, tab, item.ID); err != nil {
 		return err
 	}
-	if err := row.ScrollIntoViewIfNeeded(); err != nil {
-		return fmt.Errorf("could not scroll to row: %w", err)
+	args := map[string]any{
+		"id":          item.ID,
+		"langId":      item.TargetID,
+		"text":        item.Translation,
+		"overwrite":   config.OverwriteFilled,
+		"attempt":     attempt,
+		"editorDelay": config.EditorLoadDelay.Milliseconds(),
+		"saveDelay":   config.BeforeSaveDelay.Milliseconds(),
 	}
-	targetCell := row.Locator(targetCellSelector(item.TargetID))
-
-	// На повторной попытке ячейка может содержать наш же кривой текст — перезаписываем.
-	if attempt == 0 && !config.OverwriteFilled {
-		current, err := cellValue(targetCell)
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(current) != "" {
-			return nil
-		}
-	}
-
-	clickTarget := targetCell.Locator(".highlight").First()
-	if err := clickTarget.ScrollIntoViewIfNeeded(); err == nil {
-		// Сдвигаем экран чуть вверх, чтобы ячейку не перекрывал sticky-хэдер
-		_, _ = page.Evaluate(`window.scrollBy(0, -150)`)
-	}
-	if err := clickTarget.Click(); err != nil {
-		return fmt.Errorf("could not click cell: %w", err)
-	}
-
-	editor := targetCell.Locator(editorSelector).First()
-	visible := playwright.LocatorWaitForOptions{State: playwright.WaitForSelectorStateVisible, Timeout: playwright.Float(5000)}
-	if err := editor.WaitFor(visible); err != nil {
-		_ = clickTarget.Click(playwright.LocatorClickOptions{Force: playwright.Bool(true)})
-		visible.Timeout = playwright.Float(3000)
-		if err := editor.WaitFor(visible); err != nil {
-			path := saveDebugArtifacts(page, "error_editor_open")
-			return fmt.Errorf("editor did not appear for row %s (debug: %s): %w", item.ID, path, err)
-		}
-	}
-
-	// Фокус именно в редакторе, чтобы select-all выделил текст в нём, а не всю страницу.
-	if err := editor.Focus(); err != nil {
-		_ = editor.Click(playwright.LocatorClickOptions{Force: playwright.Bool(true)})
-	}
-	if err := sleepCtx(ctx, config.EditorLoadDelay); err != nil {
+	var res fillResult
+	if err := tab.call(ctx, "fill", args, &res); err != nil {
 		return err
 	}
-
-	selectAll, deleteWord := "Control+a", ""
-	if runtime.GOOS == "darwin" {
-		selectAll, deleteWord = "Meta+a", "Meta+Backspace"
-	}
-	_ = editor.Press(selectAll)
-	if deleteWord != "" {
-		_ = editor.Press(deleteWord)
-	}
-	_ = editor.Press("Backspace")
-
-	// Первая попытка — вставка одним событием (быстро даже для длинных скриптов).
-	// Если не подтвердилось — посимвольный ввод, как было раньше.
-	if attempt == 0 {
-		err = page.Keyboard().InsertText(item.Translation)
-	} else {
-		err = editor.PressSequentially(item.Translation)
-	}
-	if err != nil {
-		return fmt.Errorf("could not type translation: %w", err)
-	}
-
-	if err := sleepCtx(ctx, config.BeforeSaveDelay); err != nil {
-		return err
-	}
-
-	saveBtn := targetCell.Locator("button.save.btn-primary")
-	if err := saveBtn.Click(playwright.LocatorClickOptions{Timeout: playwright.Float(5000)}); err != nil {
-		path := saveDebugArtifacts(page, "error_click_btn")
-		return fmt.Errorf("could not click Save for row %s (debug: %s): %w", item.ID, path, err)
-	}
-
-	_ = editor.WaitFor(playwright.LocatorWaitForOptions{State: playwright.WaitForSelectorStateHidden, Timeout: playwright.Float(5000)})
-
-	saved, err := cellValue(targetCell)
-	if err != nil {
-		return fmt.Errorf("не прочитано сохранённое значение: %w", err)
-	}
-	if normalizeText(saved) != normalizeText(item.Translation) {
-		return fmt.Errorf("не подтверждено сохранение строки %s (%s)", item.ID, item.TargetLang)
+	if res.Status == "missing" {
+		return fmt.Errorf("строка %s пропала из DOM", item.ID)
 	}
 	return sleepCtx(ctx, config.RowNextDelay)
 }
 
 // findRow ищет строку виртуализированного списка: листает вниз, а если не нашёл —
-// возвращается наверх и проходит ещё раз (раньше строки выше экрана терялись).
-func findRow(ctx context.Context, page playwright.Page, id string) (playwright.Locator, error) {
-	loc := page.Locator(fmt.Sprintf(".row-key[data-id=%s]", cssString(id)))
+// возвращается наверх и проходит ещё раз.
+func findRow(ctx context.Context, tab *browserTab, id string) error {
+	args := map[string]string{"id": id}
 	for pass := 0; pass < 2; pass++ {
-		for k := 0; k < 60; k++ {
-			if count, _ := loc.Count(); count > 0 {
-				return loc.First(), nil
+		for k := 0; k < 200; k++ {
+			var found bool
+			if err := tab.call(ctx, "has", args, &found); err != nil {
+				return err
 			}
-			_ = page.Mouse().Wheel(0, 800)
+			if found {
+				return nil
+			}
+			var sr scrollResult
+			if err := tab.call(ctx, "scroll", map[string]int{"dy": 800}, &sr); err != nil {
+				return err
+			}
+			if !sr.Moved && k > 0 {
+				break
+			}
 			if err := sleepCtx(ctx, 150*time.Millisecond); err != nil {
-				return nil, err
+				return err
 			}
 		}
-		if err := scrollToTop(ctx, page); err != nil {
-			return nil, err
+		if err := tab.call(ctx, "top", nil, nil); err != nil {
+			return err
+		}
+		if err := sleepCtx(ctx, 300*time.Millisecond); err != nil {
+			return err
 		}
 	}
-	return nil, fmt.Errorf("строка %s не найдена в DOM после прокрутки", id)
-}
-
-func cssString(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+	return fmt.Errorf("строка %s не найдена в DOM после прокрутки", id)
 }
 
 // normalizeText сравнивает тексты без учёта различий в пробелах и переносах,
 // которые Lokalise может нормализовать при сохранении.
 func normalizeText(s string) string {
-	s = strings.ReplaceAll(s, " ", " ")
+	s = strings.ReplaceAll(s, "\u00a0", " ")
 	return strings.Join(strings.Fields(s), " ")
 }
 
-func saveDebugArtifacts(page playwright.Page, prefix string) string {
+// saveDebugSnapshot сохраняет HTML страницы в data/logs для разбора сбоев.
+func saveDebugSnapshot(ctx context.Context, tab *browserTab, prefix string) string {
+	var html string
+	if err := tab.call(ctx, "html", nil, &html); err != nil {
+		return ""
+	}
 	dir := filepath.Join("data", "logs")
 	_ = os.MkdirAll(dir, 0o755)
-	stamp := time.Now().Format("20060102_150405")
-	shot := filepath.Join(dir, fmt.Sprintf("%s_%s.png", prefix, stamp))
-	if _, err := page.Screenshot(playwright.PageScreenshotOptions{Path: playwright.String(shot)}); err != nil {
-		slog.Error("Не удалось сохранить скриншот", "error", err)
+	path := filepath.Join(dir, fmt.Sprintf("%s_%s.html", prefix, time.Now().Format("20060102_150405")))
+	if err := os.WriteFile(path, []byte(html), 0o600); err != nil {
+		return ""
 	}
-	if content, err := page.Content(); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s_%s.html", prefix, stamp)), []byte(content), 0o600)
-	}
-	return shot
-}
-
-func targetCellSelector(langID string) string {
-	return fmt.Sprintf(".key-translation[data-lang-id=%s]:not([data-is-base='1'])", cssString(langID))
-}
-
-func cellValue(cell playwright.Locator) (string, error) {
-	value := cell.Locator("[data-lokalise-editor-value]")
-	count, err := value.Count()
-	if err != nil {
-		return "", err
-	}
-	if count == 1 {
-		return value.GetAttribute("data-lokalise-editor-value")
-	}
-	if count, _ := cell.Locator(".highlight .empty").Count(); count > 0 {
-		return "", nil
-	}
-	return cell.Locator(".highlight").First().InnerText()
+	slog.Info("🧾 Снимок страницы сохранён", "path", path)
+	return path
 }

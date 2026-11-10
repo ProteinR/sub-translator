@@ -36,9 +36,10 @@ if ! go mod download; then
     echo -e "${RED}❌ Не удалось скачать зависимости Go (см. ошибку выше).${NC}"
     exit 1
 fi
-# Собираем пакет целиком: код разнесён по нескольким файлам.
-if ! go build -o ../translator-web .; then
+# Собираем пакет целиком и упаковываем в «Loka Translator.app» (окно на WebKit).
+if ! ./build-app.sh .. >/dev/null; then
     echo -e "${RED}❌ Ошибка компиляции проекта. Запуск невозможен.${NC}"
+    echo -e "${YELLOW}   Если ошибка про clang/xcrun — установите Command Line Tools: xcode-select --install${NC}"
     exit 1
 fi
 cd ..
@@ -47,4 +48,4 @@ echo -e "${GREEN}✅ Проект успешно скомпилирован!${NC
 # 3. Запуск приложения
 echo -e "${BLUE}[3/3] Запускаем Loka Translator...${NC}"
 echo -e "${GREEN}==========================================${NC}"
-exec ./translator-web
+exec "./Loka Translator.app/Contents/MacOS/loka-translator"

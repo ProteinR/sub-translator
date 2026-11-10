@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/playwright-community/playwright-go"
 	"gopkg.in/telebot.v4"
 )
 
@@ -91,46 +90,15 @@ func (a *app) runTranslation(parent context.Context) {
 		slog.Info("💰 Лимит бюджета на прогон", "usd", config.BudgetUSD)
 	}
 
-	pw, err := playwright.Run()
+	pagePool, err := a.workerTabs(config.MaxConcurrency)
 	if err != nil {
-		slog.Error("could not start playwright", "error", err)
+		slog.Error("❌ " + err.Error())
 		return
 	}
-	defer pw.Stop()
-
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{Headless: playwright.Bool(false)})
-	if err != nil {
-		slog.Error("could not launch browser", "error", err)
-		return
-	}
-	defer browser.Close()
-
-	slog.Info("🌐 Открываем первый проект для проверки авторизации...")
-	bctx, firstPage, err := ensureLogin(ctx, browser, config.Projects[0])
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			slog.Warn("⚠️ Остановлено во время авторизации")
-		} else {
-			slog.Error("Login failed", "error", err)
-		}
-		return
-	}
-	defer bctx.Close()
-	// Дефолт Playwright — 30с на действие; для одной ячейки это слишком долго.
-	bctx.SetDefaultTimeout(15000)
-	bctx.SetDefaultNavigationTimeout(60000)
+	a.eng.setBusy(true)
+	defer a.eng.setBusy(false)
 
 	slog.Info("📋 Найдено проектов", "count", len(config.Projects), "threads", config.MaxConcurrency)
-
-	pagePool := make(chan playwright.Page, config.MaxConcurrency)
-	pagePool <- firstPage
-	for i := 1; i < config.MaxConcurrency; i++ {
-		if p, err := bctx.NewPage(); err == nil {
-			pagePool <- p
-		} else {
-			slog.Warn("⚠️ Не удалось открыть дополнительную вкладку", "error", err)
-		}
-	}
 
 	modeText := "только пустые"
 	if config.OverwriteFilled {
@@ -141,7 +109,7 @@ func (a *app) runTranslation(parent context.Context) {
 	var budgetOnce sync.Once
 loop:
 	for _, projectURL := range config.Projects {
-		var page playwright.Page
+		var page *browserTab
 		select {
 		case <-ctx.Done():
 			slog.Warn("⚠️ Обработка прервана пользователем.")
@@ -150,7 +118,7 @@ loop:
 		}
 
 		wg.Add(1)
-		go func(projectURL string, p playwright.Page) {
+		go func(projectURL string, p *browserTab) {
 			defer wg.Done()
 			defer func() { pagePool <- p }()
 			defer func() {
@@ -252,4 +220,25 @@ func projectMessage(ok bool, projectURL, name string, err error) string {
 		return "✅ Завершено:\n" + link
 	}
 	return fmt.Sprintf("❌ Ошибка обработки:\n%s\nОшибка: %s", link, html.EscapeString(truncate(secrets.Redact(err.Error()), 1500)))
+}
+
+// workerTabs возвращает пул вкладок для потоков: вкладки создаются один раз и
+// остаются в окне между прогонами (вход в Lokalise общий для всех).
+func (a *app) workerTabs(n int) (chan *browserTab, error) {
+	if !hasNativeWindow {
+		return nil, errNoBrowser
+	}
+	a.tabsMu.Lock()
+	defer a.tabsMu.Unlock()
+	for len(a.tabs) < n {
+		id := len(a.tabs) + 1
+		title := fmt.Sprintf("Поток %d", id)
+		a.eng.newTab(id, title)
+		a.tabs = append(a.tabs, &browserTab{id: id, eng: a.eng})
+	}
+	pool := make(chan *browserTab, n)
+	for _, t := range a.tabs[:n] {
+		pool <- t
+	}
+	return pool, nil
 }

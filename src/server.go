@@ -27,6 +27,10 @@ type app struct {
 
 	statusMu sync.Mutex
 	statuses map[string]projectStatus
+
+	eng    tabEngine
+	tabsMu sync.Mutex
+	tabs   []*browserTab
 }
 
 type APIData struct {
@@ -41,7 +45,7 @@ type APIData struct {
 }
 
 func newApp(cfg *configStore, broker *SSEBroker, port string) *app {
-	return &app{cfg: cfg, broker: broker, port: port}
+	return &app{cfg: cfg, broker: broker, port: port, eng: defaultEngine()}
 }
 
 func (a *app) routes() http.Handler {
@@ -56,6 +60,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/start", a.handleStart)
 	mux.HandleFunc("POST /api/stop", a.handleStop)
 	mux.HandleFunc("GET /api/logs", a.handleLogs)
+	if os.Getenv("LOKA_DEBUG") == "1" {
+		mux.HandleFunc("POST /api/debug/eval", a.handleDebugEval)
+	}
 	return a.guard(mux)
 }
 
@@ -216,4 +223,40 @@ func openBrowser(url string) {
 	if err != nil {
 		slog.Warn("Could not open browser automatically", "error", err)
 	}
+}
+
+// handleDebugEval — только при LOKA_DEBUG=1: выполнить JS во вкладке (отладка
+// селекторов Lokalise). {"tab":1,"url":"…"} открывает адрес, {"tab":1,"js":"…"}
+// выполняет код (тело async-функции, результат — через return).
+func (a *app) handleDebugEval(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Tab int    `json:"tab"`
+		URL string `json:"url"`
+		JS  string `json:"js"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Tab > 0 {
+		if _, err := a.workerTabs(req.Tab); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	tab := &browserTab{id: req.Tab, eng: a.eng}
+	if req.URL != "" {
+		tab.Navigate(req.URL)
+	}
+	if req.JS == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	out, err := tab.Eval(ctx, lokaliseJS+"\nreturn JSON.stringify(await (async () => {\n"+req.JS+"\n})());")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	_, _ = w.Write([]byte(out))
 }

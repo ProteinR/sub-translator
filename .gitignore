@@ -1,6 +1,7 @@
 .idea/
 .DS_Store
 translator-web
+Loka Translator.app/
 
 # Ignore local data
 data/
