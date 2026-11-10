@@ -20,7 +20,7 @@ git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null && { echo "Тег v$V
 sed -i '' "s/^var AppVersion = \".*\"/var AppVersion = \"$VERSION\"/" src/main.go
 sed -i '' "s/Текущая версия: \*\*[0-9.]*\*\*/Текущая версия: **$VERSION**/" README.md
 
-DIST=dist
+DIST="$PWD/dist"
 rm -rf "$DIST" && mkdir -p "$DIST"
 UNIVERSAL=1 src/build-app.sh "$DIST" >/dev/null
 ZIP="$DIST/Loka-Translator-$VERSION.zip"
