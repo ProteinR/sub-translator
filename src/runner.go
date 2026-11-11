@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"sync"
+	"time"
 
 	"gopkg.in/telebot.v4"
 )
@@ -104,6 +104,19 @@ func (a *app) runTranslation(parent context.Context) {
 		"save_ms", config.BeforeSaveDelay.Milliseconds(), "next_ms", config.RowNextDelay.Milliseconds(),
 		"telegram", notify != nil, "macos", macOSVersion())
 
+	started := time.Now()
+	board := startRunBoard(notify, func(phase boardPhase) boardView {
+		snap := a.statusSnapshot()
+		u := usage.Snapshot()
+		v := boardView{Phase: phase, Model: config.Model, CostUSD: u.CostUSD, Usage: u, Started: started, Now: time.Now()}
+		for _, u := range config.Projects {
+			v.Projects = append(v.Projects, snap[u])
+		}
+		return v
+	})
+	a.board.Store(board)
+	defer a.board.Store(nil)
+
 	modeText := "только пустые"
 	if config.OverwriteFilled {
 		modeText = "перезапись всех"
@@ -141,7 +154,6 @@ loop:
 					rep.update(func(s *projectStatus) { s.Status = statusPending; s.Detail = humanizeError(err) })
 					budgetOnce.Do(func() {
 						log.Error("🛑 "+err.Error()+" — останавливаю прогон", "url", projectURL)
-						notify.Send(html.EscapeString("🛑 " + err.Error() + ". Прогон остановлен, проекты остались в очереди."))
 						stopRun(err)
 					})
 					return
@@ -159,7 +171,6 @@ loop:
 				}
 				log.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
 				rep.update(func(s *projectStatus) { s.Status = statusError; s.Detail = humanizeError(err) })
-				notify.Send(projectMessage(false, projectURL, filename, err))
 				return
 			}
 
@@ -173,10 +184,27 @@ loop:
 				}
 			})
 			log.Info("✅ Завершено", "url", projectURL)
-			notify.Send(projectMessage(true, projectURL, filename, nil))
 		}(projectURL, page)
 	}
 	wg.Wait()
+
+	phase := phaseDone
+	switch {
+	case errors.Is(context.Cause(ctx), errBudgetExceeded):
+		phase = phaseBudget
+	case ctx.Err() != nil:
+		phase = phaseStopped
+	}
+	board.Finish(phase)
+
+	var failed []projectStatus
+	snap := a.statusSnapshot()
+	for _, u := range config.Projects {
+		if p := snap[u]; p.Status == statusError {
+			failed = append(failed, p)
+		}
+	}
+	a.sendRunErrors(notify, board, failed, started)
 }
 
 // ============================================================
@@ -216,16 +244,6 @@ func (n *notifier) Send(text string) {
 	if err != nil {
 		slog.Warn("⚠️ Не удалось отправить уведомление в Telegram", "error", err)
 	}
-}
-
-// projectMessage экранирует всё, что пришло извне: символ "<" в тексте ошибки
-// раньше ломал HTML-разметку, и Telegram молча отбрасывал сообщение.
-func projectMessage(ok bool, projectURL, name string, err error) string {
-	link := fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(projectURL), html.EscapeString(name))
-	if ok {
-		return "✅ Завершено:\n" + link
-	}
-	return fmt.Sprintf("❌ Ошибка обработки:\n%s\nОшибка: %s", link, html.EscapeString(truncate(secrets.Redact(err.Error()), 1500)))
 }
 
 // workerTabs возвращает пул вкладок для потоков: вкладки создаются один раз и

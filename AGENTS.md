@@ -17,6 +17,12 @@ Kristina's Lokalise translation orders. UI and logs are in Russian.
   — run orchestration; `server.go` — HTTP API; `updater.go` — GitHub Releases updates.
 - Data: `~/Library/Application Support/Loka Translator/data` for the bundled app (config with the
   API key, `tm.jsonl`, logs). Never print or commit config files.
+- Telegram: one message per run (`board.go`): the list of projects ⬜ → 🔄 N/M → ✅/❌, edited at
+  most every 3 s and finished with the outcome (done, stopped, budget), with cost and tokens. No
+  per-project messages. If any project failed, the log archive is sent right away as a reply to it.
+- After inserting, `verifyAndRefill` scrolls the project again and compares every inserted cell with
+  the model's translation; empty or different cells are inserted again (`verifyRounds`), then the
+  project fails with the list of cells. `verify_test.go` has a fake Lokalise page for such tests.
 - Logs: the panel shows Info and above; the file `data/logs/<date>/<time>.log` also gets Debug lines
   (marked `·`): every scanned row with each target cell's state, scroll steps, every inserted cell,
   rejected translations, Lokalise page JS errors. `[N]` is the worker thread. Use `logOf(ctx)` in

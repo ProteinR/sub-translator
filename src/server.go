@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +33,8 @@ type app struct {
 	updates *updater
 	tabsMu  sync.Mutex
 	tabs    []*browserTab
+
+	board atomic.Pointer[runBoard] // табло текущего прогона в Telegram
 }
 
 type APIData struct {

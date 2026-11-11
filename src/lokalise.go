@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	rowAttempts = 2 // попытки вставки одной строки
+	rowAttempts  = 2 // попытки вставки одной строки
+	verifyRounds = 2 // повторные вставки после проверки всех ячеек
 	// Столько подряд упавших строк — и считаем, что страница сломалась.
 	maxConsecutiveRowFailures = 5
 	loginTimeout              = 10 * time.Minute
@@ -144,21 +145,107 @@ func processProject(ctx context.Context, tab *browserTab, projectURL string, con
 	defer cancel()
 	results := runTranslationPipeline(pctx, tr, jobs)
 
-	var failed []string
+	// expected — всё, что мы вставляли (кроме ячеек, оказавшихся уже заполненными):
+	// после вставки каждая из них сверяется со страницей.
+	var expected []TranslationItem
 	for res := range results {
 		if res.err != nil {
 			return filename, fmt.Errorf("translation error: %w", res.err)
 		}
-		f, err := fillTranslations(ctx, tab, res.items, config, onCell)
-		failed = append(failed, f...)
+		out, err := fillTranslations(ctx, tab, res.items, config, onCell)
 		if err != nil {
 			return filename, err
 		}
+		for _, it := range res.items {
+			if !out.skipped[it.key()] {
+				expected = append(expected, it)
+			}
+		}
 	}
-	if len(failed) > 0 {
-		return filename, fmt.Errorf("не удалось вставить %d ячеек: %s", len(failed), strings.Join(firstN(failed, 5), ", "))
+	rep.detail("Проверяю, что все переводы на месте…")
+	return filename, verifyAndRefill(ctx, tab, config, expected)
+}
+
+// verifyAndRefill проходит по всем строкам и сверяет ячейки с переводами модели.
+// Пустые или несовпавшие ячейки вставляются заново (до verifyRounds раз); если и
+// после этого что-то не совпало — ошибка со списком ячеек.
+func verifyAndRefill(ctx context.Context, tab *browserTab, config Config, expected []TranslationItem) error {
+	if len(expected) == 0 {
+		return nil
 	}
-	return filename, nil
+	refill := config
+	refill.OverwriteFilled = true // ячейка уже наша: пустая или с неполным текстом
+	for round := 0; ; round++ {
+		bad, err := verifyCells(ctx, tab, config, expected)
+		if err != nil {
+			return fmt.Errorf("проверка после вставки: %w", err)
+		}
+		if len(bad) == 0 {
+			logOf(ctx).Info("🔎 Проверка пройдена: все ячейки совпадают с переводом", "cells", len(expected), "repeats", round)
+			return nil
+		}
+		keys := make([]string, len(bad))
+		for i, it := range bad {
+			keys[i] = it.ID + "/" + it.TargetLang
+		}
+		if round == verifyRounds {
+			saveDebugSnapshot(ctx, tab, "error_verify")
+			return fmt.Errorf("не удалось вставить %d ячеек (проверка после %d повторов): %s", len(bad), verifyRounds, strings.Join(firstN(keys, 5), ", "))
+		}
+		logOf(ctx).Warn("🔎 Проверка: ячейки пустые или не совпадают с переводом — вставляю заново", "cells", len(bad), "repeat", round+1, "of", verifyRounds, "first", strings.Join(firstN(keys, 5), ", "))
+		if _, err := fillTranslations(ctx, tab, bad, refill, nil); err != nil {
+			return err
+		}
+	}
+}
+
+// verifyCells возвращает ячейки, значение которых на странице не совпадает с
+// переводом (пустые, обрезанные, чужой текст) или которые не нашлись.
+func verifyCells(ctx context.Context, tab *browserTab, config Config, items []TranslationItem) ([]TranslationItem, error) {
+	want := map[string]map[string]TranslationItem{} // id → langId → ячейка
+	for _, it := range items {
+		if want[it.ID] == nil {
+			want[it.ID] = map[string]TranslationItem{}
+		}
+		want[it.ID][it.TargetID] = it
+	}
+	var bad []TranslationItem
+	_, err := walkRows(ctx, tab, config, func(row scannedRow) (bool, error) {
+		cells, ok := want[row.ID]
+		if !ok {
+			return false, nil
+		}
+		for _, t := range row.Targets {
+			it, ok := cells[t.LangID]
+			if !ok {
+				continue
+			}
+			if normalizeText(t.Value) != normalizeText(it.Translation) {
+				reason := "другой текст"
+				if strings.TrimSpace(t.Value) == "" {
+					reason = "пусто"
+				}
+				logOf(ctx).Debug("проверка: ячейка не совпала", "id", it.ID, "lang", it.TargetLang, "reason", reason,
+					"page", truncate(t.Value, 60), "want", truncate(it.Translation, 60))
+				bad = append(bad, it)
+			}
+			delete(cells, t.LangID)
+		}
+		if len(cells) == 0 {
+			delete(want, row.ID)
+		}
+		return len(want) == 0, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for id, cells := range want { // строка или язык не попались при прокрутке
+		for _, it := range cells {
+			logOf(ctx).Debug("проверка: ячейка не найдена на странице", "id", id, "lang", it.TargetLang)
+			bad = append(bad, it)
+		}
+	}
+	return bad, nil
 }
 
 // buildJobs группирует ячейки по документу и исходному языку (все целевые языки
@@ -307,29 +394,59 @@ type scrollResult struct {
 
 func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filename string) ([]TranslationItem, error) {
 	var results []TranslationItem
-	seen := make(map[string]bool)
 	emptySource := 0
-
-	noNewElementsCount := 0
-	const maxNoNewRetries = 5
 
 	modeLog := "пустых"
 	if config.OverwriteFilled {
 		modeLog = "всех"
 	}
 	logOf(ctx).Info(fmt.Sprintf("🔍 Начинаю поиск %s строк", modeLog), "file", filename)
-	if err := tab.call(ctx, "top", nil, nil); err != nil {
+
+	seen, err := walkRows(ctx, tab, config, func(row scannedRow) (bool, error) {
+		items, err := itemsFromRow(row, config.OverwriteFilled)
+		if err != nil {
+			logOf(ctx).Debug("строка не прошла проверку", "id", row.ID, "base", row.BaseCount, "source_lang", row.SourceLang, "targets", len(row.Targets))
+			return false, err
+		}
+		if strings.TrimSpace(row.Source) == "" {
+			emptySource++
+		}
+		logOf(ctx).Debug("строка", "id", row.ID, "file", row.File, "source_lang", row.SourceLang,
+			"source", truncate(row.Source, 60), "cells", describeTargets(row, config.OverwriteFilled))
+		results = append(results, items...)
+		return false, nil
+	})
+	if err != nil {
 		return nil, err
 	}
+	if seen == 0 {
+		return nil, errors.New("не найдено строк для обработки")
+	}
+	logOf(ctx).Info("✅ Сбор данных завершен", "file", filename, "checked", seen, "collected", len(results))
+	if emptySource > 0 {
+		logOf(ctx).Info("ℹ️ Строки без исходного текста пропущены", "rows", emptySource)
+	}
+	return results, nil
+}
 
+// walkRows листает виртуализированный список сверху вниз и отдаёт fn каждую
+// строку один раз. fn возвращает true, чтобы закончить раньше. В конце список
+// возвращается наверх. Возвращает число просмотренных строк.
+func walkRows(ctx context.Context, tab *browserTab, config Config, fn func(scannedRow) (bool, error)) (int, error) {
+	seen := make(map[string]bool)
+	noNewElementsCount := 0
+	const maxNoNewRetries = 5
+
+	if err := tab.call(ctx, "top", nil, nil); err != nil {
+		return 0, err
+	}
 	for noNewElementsCount < maxNoNewRetries {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return len(seen), err
 		}
-
 		var rows []scannedRow
 		if err := tab.call(ctx, "scan", nil, &rows); err != nil {
-			return nil, err
+			return len(seen), err
 		}
 		newAddedThisStep := 0
 		for _, row := range rows {
@@ -338,22 +455,18 @@ func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filen
 			}
 			seen[row.ID] = true
 			newAddedThisStep++
-			items, err := itemsFromRow(row, config.OverwriteFilled)
+			stop, err := fn(row)
 			if err != nil {
-				logOf(ctx).Debug("строка не прошла проверку", "id", row.ID, "base", row.BaseCount, "source_lang", row.SourceLang, "targets", len(row.Targets))
-				return nil, err
+				return len(seen), err
 			}
-			if strings.TrimSpace(row.Source) == "" {
-				emptySource++
+			if stop {
+				return len(seen), tab.call(ctx, "top", nil, nil)
 			}
-			logOf(ctx).Debug("строка", "id", row.ID, "file", row.File, "source_lang", row.SourceLang,
-				"source", truncate(row.Source, 60), "cells", describeTargets(row, config.OverwriteFilled))
-			results = append(results, items...)
 		}
 
 		var sr scrollResult
 		if err := tab.call(ctx, "scroll", map[string]int{"dy": 800}, &sr); err != nil {
-			return nil, err
+			return len(seen), err
 		}
 		logOf(ctx).Debug("шаг прокрутки", "visible", len(rows), "new", newAddedThisStep, "top", int(sr.Top), "max", int(sr.Max), "moved", sr.Moved, "idle", noNewElementsCount)
 		if newAddedThisStep > 0 {
@@ -366,44 +479,44 @@ func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filen
 			noNewElementsCount += 2
 		}
 		if err := sleepCtx(ctx, config.ScrollDelay); err != nil {
-			return nil, err
+			return len(seen), err
 		}
 	}
-
-	if err := tab.call(ctx, "top", nil, nil); err != nil {
-		return nil, err
-	}
-	if len(seen) == 0 {
-		return nil, errors.New("не найдено строк для обработки")
-	}
-	logOf(ctx).Info("✅ Сбор данных завершен", "file", filename, "checked", len(seen), "collected", len(results))
-	if emptySource > 0 {
-		logOf(ctx).Info("ℹ️ Строки без исходного текста пропущены", "rows", emptySource)
-	}
-	return results, nil
+	return len(seen), tab.call(ctx, "top", nil, nil)
 }
 
-// fillTranslations вставляет пачку. Упавшие строки не валят весь проект: они
-// возвращаются списком, а проект остаётся в очереди для повторного прогона.
-// Ошибка возвращается только при отмене или если страница явно сломалась.
-func fillTranslations(ctx context.Context, tab *browserTab, items []TranslationItem, config Config, onCell func()) ([]string, error) {
+type fillOutcome struct {
+	failed  []string        // id/lang ячеек, которые не вставились
+	skipped map[string]bool // key() ячеек, оказавшихся уже заполненными
+}
+
+// fillTranslations вставляет пачку. Упавшие ячейки не валят весь проект: их
+// подберёт проверка после вставки (verifyAndRefill). Ошибка возвращается только
+// при отмене или если страница явно сломалась.
+func fillTranslations(ctx context.Context, tab *browserTab, items []TranslationItem, config Config, onCell func()) (fillOutcome, error) {
 	logOf(ctx).Info("✍️ Вставка переводов...", "cells", len(items), "langs", targetsOf(items))
 
+	out := fillOutcome{skipped: map[string]bool{}}
 	var failed []string
 	consecutive := 0
 	for _, item := range items {
 		var err error
 		for attempt := 0; attempt < rowAttempts; attempt++ {
 			if err = ctx.Err(); err != nil {
-				return failed, err
+				out.failed = failed
+				return out, err
 			}
 			var status string
 			if status, err = fillRow(ctx, tab, item, config, attempt); err == nil {
 				logOf(ctx).Debug("ячейка", "id", item.ID, "lang", item.TargetLang, "status", status, "attempt", attempt+1, "text", truncate(item.Translation, 60))
+				if strings.HasPrefix(status, "skipped") {
+					out.skipped[item.key()] = true
+				}
 				break
 			}
 			if errors.Is(err, context.Canceled) {
-				return failed, err
+				out.failed = failed
+				return out, err
 			}
 			logOf(ctx).Warn("⚠️ Строка не вставилась", "id", item.ID, "lang", item.TargetLang, "attempt", attempt+1, "error", err)
 			_ = tab.call(ctx, "escape", nil, nil) // закрываем возможный зависший редактор
@@ -417,13 +530,15 @@ func fillTranslations(ctx context.Context, tab *browserTab, items []TranslationI
 			failed = append(failed, item.ID+"/"+item.TargetLang)
 			consecutive++
 			if consecutive >= maxConsecutiveRowFailures {
-				return failed, fmt.Errorf("%d строк подряд не вставились, похоже страница сломалась; последняя ошибка: %w", consecutive, err)
+				out.failed = failed
+				return out, fmt.Errorf("%d строк подряд не вставились, похоже страница сломалась; последняя ошибка: %w", consecutive, err)
 			}
 			continue
 		}
 		consecutive = 0
 	}
-	return failed, nil
+	out.failed = failed
+	return out, nil
 }
 
 type fillResult struct {

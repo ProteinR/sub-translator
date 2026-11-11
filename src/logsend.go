@@ -170,22 +170,14 @@ func (a *app) handleLogsSend(w http.ResponseWriter, r *http.Request) {
 	if opts.Hours <= 0 || opts.Hours > 48 {
 		opts.Hours = defaultLogHours
 	}
-	cfg, err := a.cfg.Load()
+	data, n, red, err := a.buildArchive(opts)
 	if err != nil {
-		http.Error(w, "не удалось прочитать настройки: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	internal := toInternalConfig(cfg)
-	red := &redactor{}
-	red.Set(internal.APIKey, internal.TgBotToken)
-
 	now := time.Now()
-	slog.Info("📦 Собираю архив журналов", "hours", opts.Hours, "snapshots", opts.Snapshots, "mode", opts.Mode)
-	data, n, err := buildLogArchive(logsDir, opts, a.archiveInfo(cfg, opts, now), red, now)
-	if err != nil {
-		http.Error(w, "не удалось собрать архив: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	cfg, _ := a.cfg.Load()
+	internal := toInternalConfig(cfg)
 	name := "loka-logs-" + now.Format("2006-01-02_15-04") + ".zip"
 	result := map[string]any{"files": n, "bytes": len(data), "name": name}
 
@@ -213,7 +205,7 @@ func (a *app) handleLogsSend(w http.ResponseWriter, r *http.Request) {
 		if c := strings.TrimSpace(opts.Comment); c != "" {
 			caption += "\n\n" + c
 		}
-		if err := notify.SendFile(name, data, truncate(caption, 1000)); err != nil {
+		if err := notify.SendFile(name, data, truncate(caption, 1000), nil); err != nil {
 			msg := "Telegram не принял архив: " + red.Redact(err.Error())
 			if strings.Contains(err.Error(), "chat not found") {
 				msg += " — бот не видит чат: добавьте бота в чат и проверьте Chat ID в настройках"
@@ -226,6 +218,67 @@ func (a *app) handleLogsSend(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+// buildArchive собирает zip журналов по настройкам из конфига; red маскирует
+// ключи в текстах ошибок, которые вернёт отправка.
+func (a *app) buildArchive(opts logArchiveOptions) ([]byte, int, *redactor, error) {
+	cfg, err := a.cfg.Load()
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("не удалось прочитать настройки: %w", err)
+	}
+	internal := toInternalConfig(cfg)
+	red := &redactor{}
+	red.Set(internal.APIKey, internal.TgBotToken)
+	now := time.Now()
+	slog.Info("📦 Собираю архив журналов", "hours", opts.Hours, "snapshots", opts.Snapshots, "mode", opts.Mode)
+	data, n, err := buildLogArchive(logsDir, opts, a.archiveInfo(cfg, opts, now), red, now)
+	if err != nil {
+		return nil, 0, red, fmt.Errorf("не удалось собрать архив: %w", err)
+	}
+	return data, n, red, nil
+}
+
+// sendRunErrors после прогона с ошибками сразу шлёт архив журналов ответом на
+// табло: так не нужно отдельно просить логи, а ответ приходит со звуком.
+func (a *app) sendRunErrors(n *notifier, board *runBoard, failed []projectStatus, started time.Time) {
+	if n == nil || len(failed) == 0 {
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "⚠️ Ошибки в прогоне: %d. Журналы — в архиве.\n", len(failed))
+	for _, p := range failed {
+		line := "\n• " + truncate(boardName(p), 50) + " — " + truncate(p.Detail, 160)
+		if sb.Len()+len(line) > 950 {
+			sb.WriteString("\n…")
+			break
+		}
+		sb.WriteString(line)
+	}
+	hours := int(time.Since(started).Hours()) + 1
+	opts := logArchiveOptions{Hours: min(hours, 48), Snapshots: true, Mode: "auto", Comment: sb.String()}
+	data, _, red, err := a.buildArchive(opts)
+	if err != nil {
+		slog.Warn("⚠️ "+err.Error())
+		return
+	}
+	if len(data) > maxTelegramZip {
+		opts.Snapshots = false
+		if data, _, _, err = a.buildArchive(opts); err != nil || len(data) > maxTelegramZip {
+			slog.Warn("⚠️ Архив журналов больше лимита Telegram — сохраните его кнопкой «Отправить логи»")
+			return
+		}
+	}
+	name := "loka-logs-" + time.Now().Format("2006-01-02_15-04") + ".zip"
+	var replyTo *telebot.Message
+	if board != nil {
+		replyTo = board.msg
+	}
+	if err := n.SendFile(name, data, sb.String(), replyTo); err != nil {
+		slog.Warn("⚠️ Не удалось отправить журналы в Telegram", "error", red.Redact(err.Error()))
+		return
+	}
+	slog.Info("📦 Журналы с ошибками отправлены в Telegram", "projects", len(failed), "kb", len(data)>>10)
 }
 
 func saveToDownloads(name string, data []byte) (string, error) {
@@ -241,9 +294,13 @@ func saveToDownloads(name string, data []byte) (string, error) {
 	return path, os.WriteFile(path, data, 0o600)
 }
 
-// SendFile отправляет файл документом в чат уведомлений.
-func (n *notifier) SendFile(name string, data []byte, caption string) error {
+// SendFile отправляет файл документом в чат уведомлений (ответом на replyTo, если задан).
+func (n *notifier) SendFile(name string, data []byte, caption string, replyTo *telebot.Message) error {
 	doc := &telebot.Document{File: telebot.FromReader(bytes.NewReader(data)), FileName: name, Caption: caption}
-	_, err := n.bot.Send(n.chat, doc)
+	opts := &telebot.SendOptions{}
+	if replyTo != nil {
+		opts.ReplyTo = replyTo
+	}
+	_, err := n.bot.Send(n.chat, doc, opts)
 	return err
 }

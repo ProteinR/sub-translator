@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -99,15 +98,6 @@ func TestGuardBlocksForeignHostAndCSRF(t *testing.T) {
 		if rec.Code != c.want {
 			t.Errorf("%s: got %d want %d", c.name, rec.Code, c.want)
 		}
-	}
-}
-
-func TestRedactorAndTelegramEscaping(t *testing.T) {
-	secrets.Set("sk-ant-supersecret-value")
-	defer secrets.Set()
-	msg := projectMessage(false, "https://x/?a=1&b=2", "<doc>", errors.New("bad <tag> sk-ant-supersecret-value"))
-	if strings.Contains(msg, "supersecret") || strings.Contains(msg, "<tag>") || strings.Contains(msg, "<doc>") {
-		t.Fatalf("not escaped/redacted: %s", msg)
 	}
 }
 

@@ -69,6 +69,7 @@ func (a *app) setStatus(s projectStatus) {
 	if data, err := json.Marshal(s); err == nil {
 		a.broker.BroadcastControl("___PROJECT___|" + string(data))
 	}
+	a.board.Load().Changed()
 }
 
 func (a *app) statusSnapshot() map[string]projectStatus {
