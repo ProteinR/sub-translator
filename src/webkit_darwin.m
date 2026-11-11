@@ -25,6 +25,7 @@ static NSString *const kUserAgentSuffix = @"Version/26.0 Safari/605.1.15";
 @interface LokaController : NSObject <NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) NSSegmentedControl *tabBar;
+@property(nonatomic, strong) NSView *bar;
 @property(nonatomic, strong) NSView *content;
 @property(nonatomic, strong) NSMutableArray<LokaTab *> *tabs;
 @property(nonatomic) int selectedID;
@@ -71,6 +72,7 @@ static NSInteger compareTabs(id a, id b, void *ctx) {
     self.tabBar.frame = NSMakeRect(10, 5, 300, 24);
     [bar addSubview:self.tabBar];
     [root addSubview:bar];
+    self.bar = bar;
 
     self.content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, root.bounds.size.width, root.bounds.size.height - barH)];
     self.content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -180,6 +182,16 @@ static NSInteger compareTabs(id a, id b, void *ctx) {
         if (self.tabs[i].tabID == self.selectedID) self.tabBar.selectedSegment = i;
     }
     [self.tabBar sizeToFit];
+
+    // Пока вкладка одна («Панель»), полоса вкладок не нужна: прячем её и отдаём
+    // место странице. Вкладки потоков появляются, когда идёт перевод.
+    BOOL single = self.tabs.count <= 1;
+    if (self.bar.hidden != single) {
+        self.bar.hidden = single;
+        NSRect r = self.window.contentView.bounds;
+        CGFloat h = single ? r.size.height : r.size.height - self.bar.frame.size.height;
+        self.content.frame = NSMakeRect(0, 0, r.size.width, h);
+    }
 }
 
 - (void)tabClicked:(NSSegmentedControl *)sender {
