@@ -17,6 +17,12 @@ Kristina's Lokalise translation orders. UI and logs are in Russian.
   — run orchestration; `server.go` — HTTP API; `updater.go` — GitHub Releases updates.
 - Data: `~/Library/Application Support/Loka Translator/data` for the bundled app (config with the
   API key, `tm.jsonl`, logs). Never print or commit config files.
+- Logs: the panel shows Info and above; the file `data/logs/<date>/<time>.log` also gets Debug lines
+  (marked `·`): every scanned row with each target cell's state, scroll steps, every inserted cell,
+  rejected translations, Lokalise page JS errors. `[N]` is the worker thread. Use `logOf(ctx)` in
+  code that runs per project. «Отправить логи» in the panel (`logsend.go`) zips logs and error
+  snapshots for the last hours (keys masked, scripts stripped) and sends them to the Telegram chat
+  from the settings, or saves to Downloads.
 
 ## Working on it
 - Tests: `cd src && go vet ./... && go test ./...`.

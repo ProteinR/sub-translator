@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -84,13 +83,13 @@ func openProject(ctx context.Context, tab *browserTab, projectURL string, rep *p
 		switch {
 		case err == nil && st.Rows > 0:
 			if askedLogin {
-				slog.Info("✅ Вход выполнен")
+				logOf(ctx).Info("✅ Вход выполнен")
 			}
 			return st, nil
 		case onLogin && !askedLogin:
 			askedLogin = true
 			deadline = time.Now().Add(loginTimeout)
-			slog.Warn("⚠️ Требуется вход. Войдите в Lokalise во вкладке окна приложения.")
+			logOf(ctx).Warn("⚠️ Требуется вход. Войдите в Lokalise во вкладке окна приложения.")
 			rep.detail("Нужен вход в Lokalise — войдите во вкладке этого потока")
 			tab.Show()
 		case askedLogin && err == nil && !onLogin && st.Ready == "complete" &&
@@ -128,7 +127,7 @@ func processProject(ctx context.Context, tab *browserTab, projectURL string, con
 		return filename, fmt.Errorf("scroll error: %w", err)
 	}
 	if len(collected) == 0 {
-		slog.Info("ℹ️ Пустых строк не найдено", "url", projectURL)
+		logOf(ctx).Info("ℹ️ Пустых строк не найдено", "url", projectURL)
 		rep.detail("Пустых ячеек нет — переводить нечего")
 		return filename, nil
 	}
@@ -138,7 +137,7 @@ func processProject(ctx context.Context, tab *browserTab, projectURL string, con
 	})
 	onCell := func() { rep.update(func(s *projectStatus) { s.Done++ }) }
 
-	jobs := buildJobs(collected)
+	jobs := buildJobs(ctx, collected)
 
 	// Конвейер: пока браузер вставляет пачку N, модель уже переводит пачку N+1.
 	pctx, cancel := context.WithCancel(ctx)
@@ -164,7 +163,7 @@ func processProject(ctx context.Context, tab *browserTab, projectURL string, con
 
 // buildJobs группирует ячейки по документу и исходному языку (все целевые языки
 // строки — в одном запросе), сохраняя порядок строк, и режет на пачки.
-func buildJobs(items []TranslationItem) []translationJob {
+func buildJobs(ctx context.Context, items []TranslationItem) []translationJob {
 	var groups [][]TranslationItem
 	var groupKeys []string
 	index := map[string]int{}
@@ -182,7 +181,7 @@ func buildJobs(items []TranslationItem) []translationJob {
 
 	var jobs []translationJob
 	for gi, group := range groups {
-		slog.Info("🌍 Определено направление", "source", group[0].SourceLang, "targets", targetsOf(group), "file", group[0].Filename, "cells", len(group))
+		logOf(ctx).Info("🌍 Определено направление", "source", group[0].SourceLang, "targets", targetsOf(group), "file", group[0].Filename, "cells", len(group))
 		for _, batch := range splitBatches(group, maxBatchChars, maxBatchRows) {
 			jobs = append(jobs, translationJob{group: groupKeys[gi], items: batch})
 		}
@@ -249,6 +248,26 @@ type scannedRow struct {
 	Targets    []scannedTarget `json:"targets"`
 }
 
+// describeTargets — для журнала: что с каждой целевой ячейкой строки
+// («de:пусто», «fr:заполнено»), чтобы было видно, почему её не взяли в перевод.
+func describeTargets(row scannedRow, overwrite bool) string {
+	if strings.TrimSpace(row.Source) == "" {
+		return "нет исходного текста — пропуск"
+	}
+	parts := make([]string, 0, len(row.Targets))
+	for _, t := range row.Targets {
+		state := "пусто"
+		if strings.TrimSpace(t.Value) != "" {
+			state = "заполнено"
+			if overwrite {
+				state += ",перезапишу"
+			}
+		}
+		parts = append(parts, t.Lang+":"+state)
+	}
+	return strings.Join(parts, " ")
+}
+
 // itemsFromRow проверяет строку Lokalise и возвращает ячейки, которые надо перевести.
 func itemsFromRow(row scannedRow, overwrite bool) ([]TranslationItem, error) {
 	id := row.ID
@@ -289,6 +308,7 @@ type scrollResult struct {
 func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filename string) ([]TranslationItem, error) {
 	var results []TranslationItem
 	seen := make(map[string]bool)
+	emptySource := 0
 
 	noNewElementsCount := 0
 	const maxNoNewRetries = 5
@@ -297,7 +317,7 @@ func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filen
 	if config.OverwriteFilled {
 		modeLog = "всех"
 	}
-	slog.Info(fmt.Sprintf("🔍 Начинаю поиск %s строк", modeLog), "file", filename)
+	logOf(ctx).Info(fmt.Sprintf("🔍 Начинаю поиск %s строк", modeLog), "file", filename)
 	if err := tab.call(ctx, "top", nil, nil); err != nil {
 		return nil, err
 	}
@@ -320,8 +340,14 @@ func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filen
 			newAddedThisStep++
 			items, err := itemsFromRow(row, config.OverwriteFilled)
 			if err != nil {
+				logOf(ctx).Debug("строка не прошла проверку", "id", row.ID, "base", row.BaseCount, "source_lang", row.SourceLang, "targets", len(row.Targets))
 				return nil, err
 			}
+			if strings.TrimSpace(row.Source) == "" {
+				emptySource++
+			}
+			logOf(ctx).Debug("строка", "id", row.ID, "file", row.File, "source_lang", row.SourceLang,
+				"source", truncate(row.Source, 60), "cells", describeTargets(row, config.OverwriteFilled))
 			results = append(results, items...)
 		}
 
@@ -329,6 +355,7 @@ func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filen
 		if err := tab.call(ctx, "scroll", map[string]int{"dy": 800}, &sr); err != nil {
 			return nil, err
 		}
+		logOf(ctx).Debug("шаг прокрутки", "visible", len(rows), "new", newAddedThisStep, "top", int(sr.Top), "max", int(sr.Max), "moved", sr.Moved, "idle", noNewElementsCount)
 		if newAddedThisStep > 0 {
 			noNewElementsCount = 0
 		} else {
@@ -349,7 +376,10 @@ func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filen
 	if len(seen) == 0 {
 		return nil, errors.New("не найдено строк для обработки")
 	}
-	slog.Info("✅ Сбор данных завершен", "file", filename, "checked", len(seen), "collected", len(results))
+	logOf(ctx).Info("✅ Сбор данных завершен", "file", filename, "checked", len(seen), "collected", len(results))
+	if emptySource > 0 {
+		logOf(ctx).Info("ℹ️ Строки без исходного текста пропущены", "rows", emptySource)
+	}
 	return results, nil
 }
 
@@ -357,7 +387,7 @@ func scrollAndCollect(ctx context.Context, tab *browserTab, config Config, filen
 // возвращаются списком, а проект остаётся в очереди для повторного прогона.
 // Ошибка возвращается только при отмене или если страница явно сломалась.
 func fillTranslations(ctx context.Context, tab *browserTab, items []TranslationItem, config Config, onCell func()) ([]string, error) {
-	slog.Info("✍️ Вставка переводов...", "cells", len(items), "langs", targetsOf(items))
+	logOf(ctx).Info("✍️ Вставка переводов...", "cells", len(items), "langs", targetsOf(items))
 
 	var failed []string
 	consecutive := 0
@@ -367,19 +397,22 @@ func fillTranslations(ctx context.Context, tab *browserTab, items []TranslationI
 			if err = ctx.Err(); err != nil {
 				return failed, err
 			}
-			if err = fillRow(ctx, tab, item, config, attempt); err == nil {
+			var status string
+			if status, err = fillRow(ctx, tab, item, config, attempt); err == nil {
+				logOf(ctx).Debug("ячейка", "id", item.ID, "lang", item.TargetLang, "status", status, "attempt", attempt+1, "text", truncate(item.Translation, 60))
 				break
 			}
 			if errors.Is(err, context.Canceled) {
 				return failed, err
 			}
-			slog.Warn("⚠️ Строка не вставилась", "id", item.ID, "lang", item.TargetLang, "attempt", attempt+1, "error", err)
+			logOf(ctx).Warn("⚠️ Строка не вставилась", "id", item.ID, "lang", item.TargetLang, "attempt", attempt+1, "error", err)
 			_ = tab.call(ctx, "escape", nil, nil) // закрываем возможный зависший редактор
 		}
 		if onCell != nil {
 			onCell()
 		}
 		if err != nil {
+			logPageErrors(ctx, tab)
 			saveDebugSnapshot(ctx, tab, "error_fill")
 			failed = append(failed, item.ID+"/"+item.TargetLang)
 			consecutive++
@@ -398,9 +431,11 @@ type fillResult struct {
 	Kind   string `json:"kind"`
 }
 
-func fillRow(ctx context.Context, tab *browserTab, item TranslationItem, config Config, attempt int) error {
+// fillRow возвращает статус из lokalise.js: ok (вставлено), skipped (ячейка уже
+// заполнена — не трогаем).
+func fillRow(ctx context.Context, tab *browserTab, item TranslationItem, config Config, attempt int) (string, error) {
 	if err := findRow(ctx, tab, item.ID); err != nil {
-		return err
+		return "", err
 	}
 	args := map[string]any{
 		"id":          item.ID,
@@ -413,12 +448,28 @@ func fillRow(ctx context.Context, tab *browserTab, item TranslationItem, config 
 	}
 	var res fillResult
 	if err := tab.call(ctx, "fill", args, &res); err != nil {
-		return err
+		return "", err
 	}
 	if res.Status == "missing" {
-		return fmt.Errorf("строка %s пропала из DOM", item.ID)
+		return "", fmt.Errorf("строка %s пропала из DOM", item.ID)
 	}
-	return sleepCtx(ctx, config.RowNextDelay)
+	status := res.Status
+	if res.Kind != "" {
+		status += "/" + res.Kind
+	}
+	return status, sleepCtx(ctx, config.RowNextDelay)
+}
+
+// logPageErrors пишет в журнал ошибки JavaScript самой страницы Lokalise,
+// накопленные с прошлого вызова: часто они и объясняют, почему не сработал редактор.
+func logPageErrors(ctx context.Context, tab *browserTab) {
+	var errs []string
+	if err := tab.call(ctx, "pageErrors", nil, &errs); err != nil || len(errs) == 0 {
+		return
+	}
+	for _, e := range errs {
+		logOf(ctx).Debug("ошибка на странице Lokalise", "error", truncate(e, 500))
+	}
 }
 
 // findRow ищет строку виртуализированного списка: листает вниз, а если не нашёл —
@@ -452,6 +503,7 @@ func findRow(ctx context.Context, tab *browserTab, id string) error {
 			return err
 		}
 	}
+	logOf(ctx).Debug("строка не найдена после двух проходов прокрутки", "id", id)
 	return fmt.Errorf("строка %s не найдена в DOM после прокрутки", id)
 }
 
@@ -468,12 +520,12 @@ func saveDebugSnapshot(ctx context.Context, tab *browserTab, prefix string) stri
 	if err := tab.call(ctx, "html", nil, &html); err != nil {
 		return ""
 	}
-	dir := filepath.Join("data", "logs")
+	dir := logsDir
 	_ = os.MkdirAll(dir, 0o755)
 	path := filepath.Join(dir, fmt.Sprintf("%s_%s.html", prefix, time.Now().Format("20060102_150405")))
 	if err := os.WriteFile(path, []byte(html), 0o600); err != nil {
 		return ""
 	}
-	slog.Info("🧾 Снимок страницы сохранён", "path", path)
+	logOf(ctx).Info("🧾 Снимок страницы сохранён", "path", path)
 	return path
 }

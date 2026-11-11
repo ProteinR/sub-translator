@@ -105,26 +105,34 @@ func (b *SSEBroker) BroadcastControl(msg string) {
 // ============================================================
 
 type CustomHandler struct {
-	out   io.Writer
-	level slog.Level
+	ui    io.Writer // панель и stdout: Info и выше
+	file  io.Writer // файл журнала: всё, включая Debug; nil — файла нет
 	attrs []slog.Attr
 	mu    *sync.Mutex
 }
 
+// tabKey — атрибут логгера потока: выводится префиксом «[N]», чтобы строки
+// разных потоков можно было разделить в общем файле.
+const tabKey = "tab"
+
 func (h *CustomHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.level
+	if h.file != nil {
+		return level >= slog.LevelDebug
+	}
+	return level >= slog.LevelInfo
 }
 
 func (h *CustomHandler) Handle(_ context.Context, r slog.Record) error {
-	var sb strings.Builder
-	sb.WriteString(r.Time.Format("15:04:05"))
-	sb.WriteByte(' ')
-	sb.WriteString(r.Message)
+	var prefix, rest strings.Builder
 	write := func(a slog.Attr) bool {
+		if a.Key == tabKey {
+			fmt.Fprintf(&prefix, "[%v] ", a.Value.Any())
+			return true
+		}
 		if a.Value.Kind() == slog.KindString {
-			fmt.Fprintf(&sb, " %s=%q", a.Key, a.Value.String())
+			fmt.Fprintf(&rest, " %s=%q", a.Key, a.Value.String())
 		} else {
-			fmt.Fprintf(&sb, " %s=%v", a.Key, a.Value.Any())
+			fmt.Fprintf(&rest, " %s=%v", a.Key, a.Value.Any())
 		}
 		return true
 	}
@@ -132,12 +140,22 @@ func (h *CustomHandler) Handle(_ context.Context, r slog.Record) error {
 		write(a)
 	}
 	r.Attrs(write)
-	sb.WriteByte('\n')
+	line := secrets.Redact(prefix.String() + r.Message + rest.String() + "\n")
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err := h.out.Write([]byte(secrets.Redact(sb.String())))
-	return err
+	if h.file != nil {
+		tag := " "
+		if r.Level < slog.LevelInfo {
+			tag = " · " // подробности, которых нет в панели
+		}
+		_, _ = h.file.Write([]byte(r.Time.Format("15:04:05.000") + tag + line))
+	}
+	if r.Level >= slog.LevelInfo {
+		_, err := h.ui.Write([]byte(r.Time.Format("15:04:05") + " " + line))
+		return err
+	}
+	return nil
 }
 
 func (h *CustomHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -148,23 +166,37 @@ func (h *CustomHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *CustomHandler) WithGroup(string) slog.Handler { return h }
 
+// logsDir — папка журналов и снимков страниц (относительно рабочей папки data).
+var logsDir = filepath.Join("data", "logs")
+
+// setupLogger пишет Info и выше в панель и stdout, а в файл — всё, включая Debug:
+// подробности по каждой строке нужны для разбора «почему ячейка не заполнилась».
 func setupLogger(broker *SSEBroker) *os.File {
 	now := time.Now()
-	dir := filepath.Join("data", "logs", now.Format("2006-01-02"))
+	dir := filepath.Join(logsDir, now.Format("2006-01-02"))
 	_ = os.MkdirAll(dir, 0o755)
 
-	writers := []io.Writer{os.Stdout, broker}
+	h := &CustomHandler{ui: io.MultiWriter(os.Stdout, broker), mu: &sync.Mutex{}}
 	file, err := os.OpenFile(filepath.Join(dir, now.Format("15-04-05")+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err == nil {
-		writers = append(writers, file)
+		h.file = file
 	} else {
 		file = nil
 	}
-
-	slog.SetDefault(slog.New(&CustomHandler{
-		out:   io.MultiWriter(writers...),
-		level: slog.LevelInfo,
-		mu:    &sync.Mutex{},
-	}))
+	slog.SetDefault(slog.New(h))
 	return file
+}
+
+type logCtxKey struct{}
+
+// withLog кладёт в контекст логгер потока; logOf достаёт его (или общий).
+func withLog(ctx context.Context, l *slog.Logger) context.Context {
+	return context.WithValue(ctx, logCtxKey{}, l)
+}
+
+func logOf(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(logCtxKey{}).(*slog.Logger); ok {
+		return l
+	}
+	return slog.Default()
 }

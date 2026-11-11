@@ -1,8 +1,19 @@
 // Работа со страницей Lokalise (Multilingual view) изнутри вкладки WebKit.
 // Go вызывает window.__loka[op](args); каждая функция возвращает JSON-совместимый объект.
 (function () {
-  const VERSION = 2;
+  const VERSION = 3;
   if (window.__loka && window.__loka.v === VERSION) return;
+
+  // Ошибки JavaScript самой страницы: Go забирает их через pageErrors() при сбое вставки.
+  if (!window.__lokaErrs) {
+    window.__lokaErrs = [];
+    const keep = (msg) => {
+      window.__lokaErrs.push(new Date().toTimeString().slice(0, 8) + " " + msg);
+      if (window.__lokaErrs.length > 50) window.__lokaErrs.shift();
+    };
+    window.addEventListener("error", (e) => keep(`${e.message} @ ${e.filename || "?"}:${e.lineno || 0}`));
+    window.addEventListener("unhandledrejection", (e) => keep("promise: " + String((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
+  }
 
   const ROW = ".row-key[data-id]";
   const EDITOR = ".ace_text-input, textarea:not([style*='display: none']), [contenteditable='true']";
@@ -209,6 +220,12 @@
       const saved = await waitFor(() => (norm(cellValue(cell)) === norm(text) ? true : null), 3000, 100);
       if (!saved) throw new Error(`сохранение не подтвердилось (строка ${id}, редактор ${kind})`);
       return { status: "ok", kind };
+    },
+
+    pageErrors() {
+      const out = window.__lokaErrs || [];
+      window.__lokaErrs = [];
+      return out;
     },
 
     html() {

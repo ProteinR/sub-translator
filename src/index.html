@@ -113,6 +113,12 @@
   .log-line.warn .tx { color: #FCD34D; }
   .log-line.error .tx { color: #FCA5A5; }
   .log-empty { color: #A1A1AA; }
+  .send-logs { padding: 14px 22px 16px; border-top: 1px solid var(--line-soft); background: #FAFAFA; display: flex; flex-direction: column; gap: 12px; }
+  .send-logs .field textarea { min-height: 72px; font: 14px/1.45 inherit; font-family: inherit; }
+  .send-logs .opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; }
+  .send-logs .opts select { min-height: 36px; border: 1px solid #D4D4D8; border-radius: 8px; padding: 0 8px; background: var(--card); }
+  .send-logs .check input { accent-color: var(--accent); }
+  .send-logs .acts { display: flex; flex-wrap: wrap; gap: 10px; }
 
   .section { display: flex; flex-direction: column; gap: 16px; }
   .field { display: flex; flex-direction: column; gap: 6px; }
@@ -359,8 +365,34 @@
         <button type="button" id="fltAll" aria-pressed="true">Всё</button>
         <button type="button" id="fltProblems" aria-pressed="false">Проблемы · <span id="problemCount">0</span></button>
       </div>
+      <button type="button" class="btn btn-link" id="logSendToggle" aria-expanded="false" aria-controls="sendLogs">Отправить логи</button>
       <button type="button" class="btn btn-link" id="logClear">Очистить</button>
       <button type="button" class="btn btn-link" id="logToggle" aria-expanded="true" aria-controls="log">Свернуть</button>
+    </div>
+    <div class="send-logs" id="sendLogs" hidden>
+      <div class="field">
+        <label for="sendComment">Что случилось?</label>
+        <textarea id="sendComment" placeholder="Например: в проекте … не заполнились строки на немецком"></textarea>
+      </div>
+      <div class="opts">
+        <label>Журналы за
+          <select id="sendHours">
+            <option value="1">последний час</option>
+            <option value="2" selected>последние 2 часа</option>
+            <option value="6">последние 6 часов</option>
+            <option value="24">сутки</option>
+          </select>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="sendSnapshots" checked>
+          <span><span class="t">Снимки страниц при ошибках</span><span class="d">Содержат тексты проекта Lokalise</span></span>
+        </label>
+      </div>
+      <div class="acts">
+        <button type="button" class="btn btn-outline" id="sendTelegram">Отправить в Telegram</button>
+        <button type="button" class="btn" id="sendSave">Сохранить архив</button>
+      </div>
+      <span class="hint">Архив уходит в чат уведомлений из настроек. Ключи и токены в него не попадают.</span>
     </div>
     <div class="log" id="log" role="log" aria-live="polite"></div>
   </section>
@@ -905,6 +937,42 @@
   $('fltAll').onclick = () => { st.onlyProblems = false; renderLog(); };
   $('fltProblems').onclick = () => { st.onlyProblems = true; renderLog(); };
   $('logClear').onclick = () => { st.logs = []; renderLog(); };
+
+  // ---------- отправка журналов ----------
+  $('logSendToggle').onclick = () => {
+    const open = $('logSendToggle').getAttribute('aria-expanded') !== 'true';
+    $('logSendToggle').setAttribute('aria-expanded', String(open));
+    $('sendLogs').hidden = !open;
+    if (open) $('sendComment').focus();
+  };
+  async function sendLogs(mode) {
+    const btns = [$('sendTelegram'), $('sendSave')];
+    btns.forEach(b => { b.disabled = true; });
+    try {
+      const res = await fetch('/api/logs/send', {
+        method: 'POST',
+        headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode,
+          hours: Number($('sendHours').value),
+          snapshots: $('sendSnapshots').checked,
+          comment: $('sendComment').value,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const r = await res.json();
+      const size = r.bytes >= 1 << 20 ? (r.bytes / (1 << 20)).toFixed(1) + ' МБ' : Math.max(1, Math.round(r.bytes / 1024)) + ' КБ';
+      toast(mode === 'save' ? `Архив сохранён в «Загрузки» (${size})` : `Логи отправлены в Telegram (${size})`);
+      $('sendComment').value = '';
+      $('logSendToggle').click();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btns.forEach(b => { b.disabled = false; });
+    }
+  }
+  $('sendTelegram').onclick = () => sendLogs('telegram');
+  $('sendSave').onclick = () => sendLogs('save');
   $('logToggle').onclick = () => {
     const open = $('logToggle').getAttribute('aria-expanded') !== 'true';
     $('logToggle').setAttribute('aria-expanded', String(open));

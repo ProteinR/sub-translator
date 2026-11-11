@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -274,7 +273,7 @@ func (c *anthropicClient) Translate(ctx context.Context, req translateRequest) (
 		if cut <= 0 || cut >= len(req.Items) {
 			return nil, err
 		}
-		slog.Warn("✂️ Ответ не влез в лимит токенов, делю пачку", "items", len(req.Items))
+		logOf(ctx).Warn("✂️ Ответ не влез в лимит токенов, делю пачку", "items", len(req.Items))
 		left, err := c.Translate(ctx, translateRequest{Items: req.Items[:cut], Context: req.Context})
 		if err != nil {
 			return nil, err
@@ -327,12 +326,12 @@ func (c *anthropicClient) translateOnce(ctx context.Context, req translateReques
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			if c.fallbackModel != "" && model != c.fallbackModel && (overloads >= 2 || badOutputs >= 2) {
-				slog.Warn("🔀 Переключаюсь на запасную модель для этой пачки", "from", model, "to", c.fallbackModel, "reason", lastErr)
+				logOf(ctx).Warn("🔀 Переключаюсь на запасную модель для этой пачки", "from", model, "to", c.fallbackModel, "reason", lastErr)
 				model = c.fallbackModel
 				overloads, badOutputs = 0, 0
 			}
 			delay := backoff(attempt, lastErr)
-			slog.Warn("🔁 Повтор запроса к Anthropic", "attempt", attempt, "of", c.maxRetries, "wait", delay.Round(time.Millisecond).String(), "pending", len(pending), "error", lastErr)
+			logOf(ctx).Warn("🔁 Повтор запроса к Anthropic", "attempt", attempt, "of", c.maxRetries, "wait", delay.Round(time.Millisecond).String(), "pending", len(pending), "error", lastErr)
 			if err := c.sleep(ctx, delay); err != nil {
 				return nil, err
 			}
@@ -366,7 +365,7 @@ func (c *anthropicClient) translateOnce(ctx context.Context, req translateReques
 			return nil, err
 		}
 
-		slog.Info("⏳ Запрос к Anthropic", "model", model, "cells", len(todo), "direction", todo[0].SourceLang+" → "+targetsOf(todo))
+		logOf(ctx).Info("⏳ Запрос к Anthropic", "model", model, "cells", len(todo), "direction", todo[0].SourceLang+" → "+targetsOf(todo))
 		resp, err := c.call(ctx, body)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -413,12 +412,15 @@ func (c *anthropicClient) translateOnce(ctx context.Context, req translateReques
 			delete(pending, k)
 		}
 		if len(pending) == 0 {
-			slog.Info("✅ Перевод получен", "cells", len(items), "in_tokens", resp.Usage.InputTokens, "out_tokens", resp.Usage.OutputTokens, "cache_read", resp.Usage.CacheReadInputTokens)
+			logOf(ctx).Info("✅ Перевод получен", "cells", len(items), "in_tokens", resp.Usage.InputTokens, "out_tokens", resp.Usage.OutputTokens, "cache_read", resp.Usage.CacheReadInputTokens)
 			return items, nil
 		}
 		missing := len(pending) - len(problems)
 		if missing > 0 {
 			problems = append(problems, fmt.Sprintf("нет перевода для %d ячеек", missing))
+		}
+		for _, p := range problems {
+			logOf(ctx).Debug("перевод отклонён", "cell", p)
 		}
 		badOutputs++
 		lastErr = &badOutputError{errors.New(strings.Join(firstN(problems, 5), "; "))}

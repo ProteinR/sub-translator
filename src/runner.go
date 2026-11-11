@@ -99,6 +99,10 @@ func (a *app) runTranslation(parent context.Context) {
 	defer a.eng.setBusy(false)
 
 	slog.Info("📋 Найдено проектов", "count", len(config.Projects), "threads", config.MaxConcurrency)
+	slog.Debug("⚙️ Настройки прогона", "model", config.Model, "fallback", config.FallbackModel, "overwrite", config.OverwriteFilled,
+		"scroll_ms", config.ScrollDelay.Milliseconds(), "editor_ms", config.EditorLoadDelay.Milliseconds(),
+		"save_ms", config.BeforeSaveDelay.Milliseconds(), "next_ms", config.RowNextDelay.Milliseconds(),
+		"telegram", notify != nil, "macos", macOSVersion())
 
 	modeText := "только пустые"
 	if config.OverwriteFilled {
@@ -121,27 +125,29 @@ loop:
 		go func(projectURL string, p *browserTab) {
 			defer wg.Done()
 			defer func() { pagePool <- p }()
+			log := slog.With(tabKey, p.id)
+			ctx := withLog(ctx, log)
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Error("💥 Паника при обработке проекта", "url", projectURL, "panic", r, "stack", string(debug.Stack()))
+					log.Error("💥 Паника при обработке проекта", "url", projectURL, "panic", r, "stack", string(debug.Stack()))
 				}
 			}()
 
-			slog.Info(fmt.Sprintf("🚀 Старт обработки (Режим: %s)", modeText), "url", projectURL)
+			log.Info(fmt.Sprintf("🚀 Старт обработки (Режим: %s)", modeText), "url", projectURL)
 			rep := &projectReporter{st: projectStatus{URL: projectURL, Status: statusRunning}, emit: a.setStatus}
 			filename, err := processProject(ctx, p, projectURL, config, tr, rep)
 			if err != nil {
 				if errors.Is(err, errBudgetExceeded) {
 					rep.update(func(s *projectStatus) { s.Status = statusPending; s.Detail = humanizeError(err) })
 					budgetOnce.Do(func() {
-						slog.Error("🛑 "+err.Error()+" — останавливаю прогон", "url", projectURL)
+						log.Error("🛑 "+err.Error()+" — останавливаю прогон", "url", projectURL)
 						notify.Send(html.EscapeString("🛑 " + err.Error() + ". Прогон остановлен, проекты остались в очереди."))
 						stopRun(err)
 					})
 					return
 				}
 				if errors.Is(err, context.Canceled) {
-					slog.Warn("⚠️ Остановлено", "url", projectURL)
+					log.Warn("⚠️ Остановлено", "url", projectURL)
 					rep.update(func(s *projectStatus) {
 						s.Status = statusPending
 						s.Detail = "Остановлено — продолжится при следующем запуске"
@@ -151,14 +157,14 @@ loop:
 					})
 					return
 				}
-				slog.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
+				log.Error("❌ Ошибка обработки", "file", filename, "url", projectURL, "error", err)
 				rep.update(func(s *projectStatus) { s.Status = statusError; s.Detail = humanizeError(err) })
 				notify.Send(projectMessage(false, projectURL, filename, err))
 				return
 			}
 
 			if err := a.cfg.RemoveProject(projectURL); err != nil {
-				slog.Warn("⚠️ Ошибка при удалении из очереди", "url", projectURL, "error", err)
+				log.Warn("⚠️ Ошибка при удалении из очереди", "url", projectURL, "error", err)
 			}
 			rep.update(func(s *projectStatus) {
 				s.Status = statusDone
@@ -166,7 +172,7 @@ loop:
 					s.Detail = fmt.Sprintf("Готово · %d ячеек", s.Total)
 				}
 			})
-			slog.Info("✅ Завершено", "url", projectURL)
+			log.Info("✅ Завершено", "url", projectURL)
 			notify.Send(projectMessage(true, projectURL, filename, nil))
 		}(projectURL, page)
 	}

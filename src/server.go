@@ -61,6 +61,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/start", a.handleStart)
 	mux.HandleFunc("POST /api/stop", a.handleStop)
 	mux.HandleFunc("GET /api/logs", a.handleLogs)
+	mux.HandleFunc("POST /api/logs/send", a.handleLogsSend)
 	mux.HandleFunc("GET /api/update", a.handleUpdateCheck)
 	mux.HandleFunc("POST /api/update/install", a.handleUpdateInstall)
 	if os.Getenv("LOKA_DEBUG") == "1" {

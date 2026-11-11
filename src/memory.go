@@ -162,7 +162,7 @@ func (c *cachedTranslator) Translate(ctx context.Context, req translateRequest) 
 		hits++
 	}
 	if hits > 0 {
-		slog.Info("🧠 Взято из памяти переводов", "cells", hits)
+		logOf(ctx).Info("🧠 Взято из памяти переводов", "cells", hits)
 		if c.usage != nil {
 			c.usage.AddMemoryHits(hits)
 		}
