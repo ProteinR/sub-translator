@@ -15,7 +15,7 @@ import (
 var indexHTML []byte
 
 // var, а не const: build-app.sh может подменить версию (APP_VERSION) для проверки обновлений.
-var AppVersion = "3.3.0"
+var AppVersion = "3.4.0"
 
 const defaultPort = "8080"
 
