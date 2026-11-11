@@ -79,25 +79,16 @@ func renderBoard(v boardView) string {
 	if v.Phase != phaseRunning {
 		period += "–" + v.Now.Format("15:04")
 	}
-	fmt.Fprintf(&sb, "🤖 %s · 💳 $%.2f · 🕐 %s\n", html.EscapeString(v.Model), v.CostUSD, period)
-	if u := v.Usage; u.Requests > 0 || u.MemoryHits > 0 {
-		fmt.Fprintf(&sb, "🔤 Токены: %s вход · %s выход", fmtTokens(u.InputTokens+u.CacheRead+u.CacheWrite), fmtTokens(u.OutputTokens))
-		if u.CacheRead > 0 {
-			fmt.Fprintf(&sb, " · %s из кэша", fmtTokens(u.CacheRead))
-		}
-		if u.MemoryHits > 0 {
-			fmt.Fprintf(&sb, " · 🧠 %d из памяти", u.MemoryHits)
-		}
-		sb.WriteByte('\n')
-	}
+	fmt.Fprintf(&sb, "💳 <b>$%.2f</b> · 🕐 %s\n", v.CostUSD, period)
 	sb.WriteByte('\n')
 
+	tech := boardTech(v)
 	lines := make([]string, 0, len(v.Projects))
 	for _, p := range v.Projects {
 		lines = append(lines, boardLine(p, v.Phase))
 	}
 	body := strings.Join(lines, "\n")
-	if sb.Len()+len(body) > boardMaxChars {
+	if sb.Len()+len(body)+len(tech) > boardMaxChars {
 		// Длинная очередь: готовые схлопываются в одну строку.
 		lines = lines[:0]
 		for _, p := range v.Projects {
@@ -107,12 +98,31 @@ func renderBoard(v boardView) string {
 		}
 		lines = append(lines, fmt.Sprintf("✅ ещё готово: %d", done))
 		body = strings.Join(lines, "\n")
-		if sb.Len()+len(body) > boardMaxChars {
-			body = truncate(body, boardMaxChars-sb.Len())
+		if sb.Len()+len(body)+len(tech) > boardMaxChars {
+			body = truncate(body, boardMaxChars-sb.Len()-len(tech))
 			body = body[:strings.LastIndex(body, "\n")+1] + "…"
 		}
 	}
 	sb.WriteString(body)
+	sb.WriteString(tech)
+	return sb.String()
+}
+
+// boardTech — техническая строка в самом низу, после пустых строк: модель и
+// токены под спойлером (раскрываются нажатием). Сверху — то, что нужно сразу.
+func boardTech(v boardView) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n\n\n🔤 <tg-spoiler>%s", html.EscapeString(v.Model))
+	if u := v.Usage; u.Requests > 0 || u.MemoryHits > 0 {
+		fmt.Fprintf(&sb, " · %s вход · %s выход", fmtTokens(u.InputTokens+u.CacheRead+u.CacheWrite), fmtTokens(u.OutputTokens))
+		if u.CacheRead > 0 {
+			fmt.Fprintf(&sb, " · %s из кэша", fmtTokens(u.CacheRead))
+		}
+		if u.MemoryHits > 0 {
+			fmt.Fprintf(&sb, " · 🧠 %d из памяти", u.MemoryHits)
+		}
+	}
+	sb.WriteString("</tg-spoiler>")
 	return sb.String()
 }
 

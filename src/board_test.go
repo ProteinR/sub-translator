@@ -25,11 +25,11 @@ func TestRenderBoard(t *testing.T) {
 	got := renderBoard(v)
 	for _, want := range []string{
 		"⏳ <b>Перевод идёт</b> · 1 из 4 · ошибок: 1",
-		"💳 $0.12 · 🕐 12:30\n",
+		"💳 <b>$0.12</b> · 🕐 12:30\n\n",
 		"⬜ <a href=\"https://app.lokalise.com/project/111.abc/?view=multi\">проект 111.abc</a>",
 		"🔄 <a href=\"https://x/project/2/?a=1&amp;b=2\">ep&lt;2&gt;.srt</a> · 12/40",
 		"✅ <a href=\"https://x/project/3/\">ep3.srt</a> · 21 ячейка",
-		"❌ <a href=\"https://x/project/4/\">ep4.srt</a>\n      └ bad &lt;tag&gt; &amp; co",
+		"❌ <a href=\"https://x/project/4/\">ep4.srt</a>\n      └ bad &lt;tag&gt; &amp; co\n\n\n🔤 <tg-spoiler>claude-haiku-5-5</tg-spoiler>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
@@ -69,7 +69,7 @@ func TestRenderBoardTokens(t *testing.T) {
 	v := boardView{Phase: phaseRunning, Model: "m", Started: time.Now(), Now: time.Now(),
 		Usage: usageSnapshot{Requests: 3, InputTokens: 2000, CacheRead: 10500, OutputTokens: 950, MemoryHits: 4}}
 	got := renderBoard(v)
-	if want := "🔤 Токены: 12.5k вход · 950 выход · 10.5k из кэша · 🧠 4 из памяти\n"; !strings.Contains(got, want) {
+	if want := "\n\n\n🔤 <tg-spoiler>m · 12.5k вход · 950 выход · 10.5k из кэша · 🧠 4 из памяти</tg-spoiler>"; !strings.Contains(got, want) {
 		t.Errorf("missing %q in:\n%s", want, got)
 	}
 }
