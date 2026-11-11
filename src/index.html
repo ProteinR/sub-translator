@@ -27,11 +27,8 @@
   .top-inner { max-width: 1040px; margin: 0 auto; padding: 12px 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
   .brand { display: flex; align-items: baseline; gap: 10px; flex-grow: 1; }
   .brand b { font-size: 18px; letter-spacing: -0.01em; }
-  .version { font: 12px var(--mono); color: var(--muted); }
-  .usage { display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--ink-2); background: var(--line-soft); border-radius: 999px; padding: 6px 12px; }
-  .usage strong { color: var(--ink); }
+  .usage { font-size: 14px; font-weight: 500; color: var(--ink-2); background: var(--line-soft); border-radius: 999px; padding: 6px 12px; cursor: default; }
   .usage.over { background: var(--err-bg); color: var(--err-fg); }
-  .usage .dot { color: #A1A1AA; }
 
   .wrap { max-width: 1040px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
   .wrap.narrow { max-width: 760px; }
@@ -64,12 +61,13 @@
   .banner.upd .d { color: var(--run-fg); white-space: pre-line; }
   .banner.upd .btn { background: var(--accent); }
   .banner.upd .btn:disabled { opacity: .6; }
-  button.version { background: none; border: none; padding: 2px 4px; cursor: pointer; border-radius: 6px; }
-  button.version:hover { background: var(--line-soft); }
+  .about { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+  .about .ver { font: 13px var(--mono); color: var(--muted); flex-grow: 1; }
 
   .run { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; }
   .run-text { flex: 1 1 140px; min-width: 0; }
   .run-text h2 { font-size: 18px; }
+  .run-text .hint.warn { color: var(--warn-text); font-weight: 500; }
   .check { display: flex; align-items: center; gap: 10px; cursor: pointer; min-height: 44px; }
   .check input { width: 18px; height: 18px; accent-color: var(--warn-text); }
   .check .t { font-weight: 500; display: block; }
@@ -83,29 +81,41 @@
   .q-add .hint { flex-basis: 100%; }
   .q-empty { padding: 36px 22px; text-align: center; color: var(--muted); font-size: 14px; }
   .q-list { list-style: none; margin: 0; padding: 0; }
-  .q-item { display: flex; align-items: flex-start; gap: 14px; padding: 14px 22px; border-bottom: 1px solid var(--line-soft); }
+  .q-item { display: flex; align-items: center; gap: 14px; padding: 10px 14px 10px 22px; border-bottom: 1px solid var(--line-soft); min-height: 60px; }
   .q-item:last-child { border-bottom: none; }
-  .badge { flex: 0 0 auto; margin-top: 2px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; min-width: 88px; text-align: center; }
-  .badge.running { background: var(--run-bg); color: var(--run-fg); }
-  .badge.pending { background: var(--wait-bg); color: var(--wait-fg); }
-  .badge.error { background: var(--err-bg); color: var(--err-fg); }
-  .badge.done { background: var(--ok-bg); color: var(--ok-fg); }
-  .q-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-  .q-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .q-url { font: 12px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .q-url a { color: inherit; text-decoration: none; }
-  .q-url a:hover { text-decoration: underline; }
+  .q-ic { flex: 0 0 auto; width: 20px; height: 20px; display: inline-flex; color: var(--faint); }
+  .q-ic.running { color: var(--bar); }
+  .q-ic.running svg { animation: spin 1.2s linear infinite; }
+  .q-ic.done { color: var(--ok-fg); }
+  .q-ic.error { color: var(--err); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .q-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .q-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); text-decoration: none; }
+  a.q-name:hover { color: var(--accent); text-decoration: underline; }
   .q-detail { font-size: 13px; color: var(--muted); }
   .q-detail.error { color: var(--err-fg); }
-  .bar { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 4px; max-width: 520px; }
-  .bar > div { height: 6px; background: var(--bar); border-radius: 999px; transition: width .3s; }
+  .q-count { flex: 0 0 auto; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .q-count.done { color: var(--ok-fg); }
+  .q-item .icon-btn { opacity: 0; transition: opacity .15s; }
+  .q-item:hover .icon-btn, .q-item .icon-btn:focus-visible { opacity: 1; }
+  @media (hover: none) { .q-item .icon-btn { opacity: 1; } }
+  .bar { height: 4px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 4px; max-width: 520px; }
+  .bar > div { height: 4px; background: var(--bar); border-radius: 999px; transition: width .3s; }
 
+  .foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: -8px; }
+  .foot .grow { flex-grow: 1; }
+  .foot .btn-link { color: var(--muted); font-size: 14px; display: inline-flex; gap: 6px; align-items: center; }
+  .foot .btn-link:hover { color: var(--ink); }
+  .foot .btn-link.alert { color: var(--err); }
+  .foot .chev { display: inline-block; transition: transform .2s; }
+  .foot [aria-expanded="true"] .chev { transform: rotate(90deg); }
   .log-head { padding: 8px 14px 8px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
   .log-head h2 { flex-grow: 1; }
+  .send-head { padding: 14px 22px 0; }
   .seg { display: inline-flex; background: var(--line-soft); border-radius: 10px; padding: 3px; }
   .seg button { min-height: 34px; padding: 0 12px; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; background: transparent; }
   .seg button[aria-pressed="true"] { background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
-  .log { background: var(--ink); padding: 14px 22px; height: 300px; overflow-y: auto; font: 12.5px/1.7 var(--mono); border-radius: 0 0 14px 14px; }
+  .log { background: var(--ink); padding: 14px 22px; height: 360px; overflow-y: auto; font: 12.5px/1.7 var(--mono); border-radius: 0 0 14px 14px; }
   .log-line { display: flex; gap: 12px; }
   .log-line .tm { color: #A1A1AA; flex: 0 0 auto; }
   .log-line .tx { white-space: pre-wrap; word-break: break-word; color: #D4D4D8; }
@@ -113,7 +123,7 @@
   .log-line.warn .tx { color: #FCD34D; }
   .log-line.error .tx { color: #FCA5A5; }
   .log-empty { color: #A1A1AA; }
-  .send-logs { padding: 14px 22px 16px; border-top: 1px solid var(--line-soft); background: #FAFAFA; display: flex; flex-direction: column; gap: 12px; }
+  .send-logs { padding: 14px 22px 16px; display: flex; flex-direction: column; gap: 12px; }
   .send-logs .field textarea { min-height: 72px; font: 14px/1.45 inherit; font-family: inherit; }
   .send-logs .opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; }
   .send-logs .opts select { min-height: 36px; border: 1px solid #D4D4D8; border-radius: 8px; padding: 0 8px; background: var(--card); }
@@ -180,8 +190,6 @@
   @media (max-width: 640px) {
     .wrap, .top-inner { padding-left: 14px; padding-right: 14px; }
     .grid2 { grid-template-columns: minmax(0, 1fr); }
-    .q-item { flex-wrap: wrap; }
-    .badge { min-width: 0; }
   }
 </style>
 </head>
@@ -189,8 +197,8 @@
 
 <header class="top">
   <div class="top-inner">
-    <div class="brand"><b>Loka Translator</b><button type="button" class="version" id="version" title="Проверить обновления"></button></div>
-    <div class="usage" id="usage" title="Расход текущего или последнего запуска" hidden></div>
+    <div class="brand"><b>Loka Translator</b></div>
+    <div class="usage" id="usage" hidden></div>
     <button type="button" class="btn" id="navSettings">
       <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       Настройки
@@ -325,13 +333,6 @@
       <h2 id="runTitle">Загрузка…</h2>
       <div class="hint" id="runSub"></div>
     </div>
-    <label class="check">
-      <input type="checkbox" id="overwrite">
-      <span>
-        <span class="t">Перезаписывать заполненные</span>
-        <span class="d" id="overwriteHint">Выкл. — заполняются только пустые ячейки</span>
-      </span>
-    </label>
     <button type="button" class="btn btn-primary" id="btnStart" disabled>
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5z"/></svg>
       Запустить перевод
@@ -344,7 +345,7 @@
 
   <section class="card" aria-labelledby="queueTitle">
     <div class="q-head">
-      <h2 id="queueTitle">Очередь проектов</h2>
+      <h2 id="queueTitle">Проекты</h2>
       <span class="hint" id="queueSummary"></span>
       <button type="button" class="btn-link btn" id="clearDone" hidden>Убрать готовые</button>
     </div>
@@ -358,18 +359,18 @@
     <ul class="q-list" id="queueList"></ul>
   </section>
 
-  <section class="card" aria-labelledby="logTitle">
-    <div class="log-head">
-      <h2 id="logTitle">Журнал</h2>
-      <div class="seg" role="group" aria-label="Фильтр журнала">
-        <button type="button" id="fltAll" aria-pressed="true">Всё</button>
-        <button type="button" id="fltProblems" aria-pressed="false">Проблемы · <span id="problemCount">0</span></button>
-      </div>
-      <button type="button" class="btn btn-link" id="logSendToggle" aria-expanded="false" aria-controls="sendLogs">Отправить логи</button>
-      <button type="button" class="btn btn-link" id="logClear">Очистить</button>
-      <button type="button" class="btn btn-link" id="logToggle" aria-expanded="true" aria-controls="log">Свернуть</button>
-    </div>
-    <div class="send-logs" id="sendLogs" hidden>
+  <div class="foot">
+    <button type="button" class="btn btn-link" id="logToggle" aria-expanded="false" aria-controls="logCard"><span class="chev" aria-hidden="true">›</span> Подробный журнал</button>
+    <span class="grow"></span>
+    <button type="button" class="btn btn-link" id="logSendToggle" aria-expanded="false" aria-controls="sendCard">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+      <span id="sendLabel">Сообщить о проблеме</span>
+    </button>
+  </div>
+
+  <section class="card" id="sendCard" aria-labelledby="sendTitle" hidden>
+    <div class="send-head"><h2 id="sendTitle">Сообщить о проблеме</h2></div>
+    <div class="send-logs" id="sendLogs">
       <div class="field">
         <label for="sendComment">Что случилось?</label>
         <textarea id="sendComment" placeholder="Например: в проекте … не заполнились строки на немецком"></textarea>
@@ -392,7 +393,18 @@
         <button type="button" class="btn btn-outline" id="sendTelegram">Отправить в Telegram</button>
         <button type="button" class="btn" id="sendSave">Сохранить архив</button>
       </div>
-      <span class="hint">Архив уходит в чат уведомлений из настроек. Ключи и токены в него не попадают.</span>
+      <span class="hint">Журналы уходят архивом в чат уведомлений из настроек. Ключи и токены в него не попадают.</span>
+    </div>
+  </section>
+
+  <section class="card" id="logCard" aria-labelledby="logTitle" hidden>
+    <div class="log-head">
+      <h2 id="logTitle">Журнал</h2>
+      <div class="seg" role="group" aria-label="Фильтр журнала">
+        <button type="button" id="fltAll" aria-pressed="true">Всё</button>
+        <button type="button" id="fltProblems" aria-pressed="false">Проблемы · <span id="problemCount">0</span></button>
+      </div>
+      <button type="button" class="btn btn-link" id="logClear">Очистить</button>
     </div>
     <div class="log" id="log" role="log" aria-live="polite"></div>
   </section>
@@ -447,6 +459,13 @@
       <input id="f_budget" data-field="budgetUsd" data-kind="float" type="number" step="0.01" min="0" placeholder="0">
       <span class="hint">0 — без лимита. При достижении перевод остановится.</span>
     </div>
+    <label class="check">
+      <input type="checkbox" id="overwrite">
+      <span>
+        <span class="t">Перезаписывать заполненные ячейки</span>
+        <span class="d" id="overwriteHint">Выкл. — заполняются только пустые ячейки</span>
+      </span>
+    </label>
   </section>
 
   <section class="card pad section" aria-labelledby="sPrompt">
@@ -504,6 +523,12 @@
       <button type="button" class="btn" id="resetDelays" style="align-self: flex-start">Сбросить паузы по умолчанию</button>
     </div>
   </section>
+
+  <section class="card pad about" aria-label="О приложении">
+    <span class="ver">Loka Translator <span id="version"></span></span>
+    <span class="hint" id="updState" role="status"></span>
+    <button type="button" class="btn" id="checkUpdate">Проверить обновления</button>
+  </section>
 </main>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -515,6 +540,14 @@
   const DEFAULT_DELAYS = { scrollDelay: 2000, editorLoadDelay: 500, beforeSaveDelay: 300, rowNextDelay: 200 };
   const MODEL_NAMES = { 'claude-haiku-5-5': 'Claude Haiku 5.5', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'claude-opus-5-5': 'Claude Opus 5.5' };
   const STATUS_LABEL = { running: 'В работе', pending: 'В очереди', error: 'Ошибка', done: 'Готово' };
+  const SVG = (paths) => '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>';
+  const STATUS_ICON = {
+    pending: SVG('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+    running: SVG('<path d="M21 12a9 9 0 1 1-6.2-8.6"/>'),
+    done: SVG('<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>'),
+    error: SVG('<circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/>'),
+  };
+  const QUIET_DETAILS = new Set(['Ждёт своей очереди', 'Ждёт запуска']);
   const MAX_LOG = 2000;
 
   const st = {
@@ -713,15 +746,15 @@
     for (const it of items) {
       const status = it.status || 'pending';
       const li = el('li', 'q-item');
-      li.appendChild(el('span', 'badge ' + status, STATUS_LABEL[status] || status));
+      const ic = el('span', 'q-ic ' + status);
+      ic.title = STATUS_LABEL[status] || status;
+      ic.innerHTML = STATUS_ICON[status] || STATUS_ICON.pending;
+      li.appendChild(ic);
 
       const body = el('div', 'q-body');
-      body.appendChild(el('div', 'q-name', it.name || shortName(it.url)));
-      const urlLine = el('div', 'q-url');
-      const a = el('a', null, it.url);
-      a.href = it.url; a.target = '_blank'; a.rel = 'noopener';
-      urlLine.appendChild(a);
-      body.appendChild(urlLine);
+      const a = el('a', 'q-name', it.name || shortName(it.url));
+      a.href = it.url; a.target = '_blank'; a.rel = 'noopener'; a.title = it.url;
+      body.appendChild(a);
 
       if (status === 'running' && it.total > 0) {
         const pct = Math.min(100, Math.round((it.done / it.total) * 100));
@@ -736,13 +769,16 @@
         bar.appendChild(fill);
         body.appendChild(bar);
       }
+      // Под названием — только то, что стоит прочитать: этап работы или причина ошибки.
       let detail = it.detail || '';
-      if (status === 'running' && it.total > 0) {
-        detail = `Обработано ${it.done} из ${it.total} ${plural(it.total, 'ячейки', 'ячеек', 'ячеек')}` + (it.detail ? ' · ' + it.detail : '');
-      }
-      if (!detail && status === 'pending') detail = 'Ждёт запуска';
+      if (status === 'done' || (status === 'running' && it.total > 0) || QUIET_DETAILS.has(detail)) detail = '';
       if (detail) body.appendChild(el('div', 'q-detail' + (status === 'error' ? ' error' : ''), detail));
       li.appendChild(body);
+
+      let count = '';
+      if (status === 'running' && it.total > 0) count = `${it.done} / ${it.total}`;
+      else if (status === 'done') count = it.total > 0 ? `${it.total} ${plural(it.total, 'ячейка', 'ячейки', 'ячеек')}` : 'готово';
+      if (count) li.appendChild(el('span', 'q-count ' + status, count));
 
       const rm = el('button', 'icon-btn');
       rm.type = 'button';
@@ -837,20 +873,22 @@
     $('overwrite').disabled = st.running;
 
     if (!st.cfg) return;
-    const model = MODEL_NAMES[st.cfg.model] || st.cfg.model;
+    const owNote = ow ? 'Заполненные переводы будут заменены' : '';
+    $('runSub').classList.toggle('warn', !!owNote && !st.running);
     if (!keyOk) {
       $('runTitle').textContent = 'Настройка не завершена';
       $('runSub').textContent = 'Укажите ключ Anthropic, затем добавьте проекты.';
     } else if (st.running) {
-      const active = Object.values(st.statuses).filter((s) => s.status === 'running').map((s) => s.name || shortName(s.url));
+      const items = queueItems();
+      const done = items.filter((i) => i.status === 'done').length;
       $('runTitle').textContent = 'Идёт перевод';
-      $('runSub').textContent = (active.length ? active.join(', ') + ' · ' : '') + model;
+      $('runSub').textContent = `Готово ${done} из ${items.length} ${plural(items.length, 'проекта', 'проектов', 'проектов')}`;
     } else if (pending === 0) {
       $('runTitle').textContent = 'Очередь пуста';
-      $('runSub').textContent = 'Добавьте проекты ниже.';
+      $('runSub').textContent = 'Добавьте ссылку на проект Lokalise ниже.';
     } else {
       $('runTitle').textContent = 'Готов к запуску';
-      $('runSub').textContent = `В очереди ${pending} ${plural(pending, 'проект', 'проекта', 'проектов')} · ${model}. Языки определяются по странице Lokalise.`;
+      $('runSub').textContent = owNote || `В очереди ${pending} ${plural(pending, 'проект', 'проекта', 'проектов')}`;
     }
   }
 
@@ -883,14 +921,15 @@
 
   // ---------- расход ----------
   function renderUsage(u) {
+    // На виду — только сумма; подробности в подсказке при наведении.
     const box = $('usage');
-    box.replaceChildren();
-    const cost = '≈ $' + u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2) + (u.costIncomplete ? '+' : '');
-    box.appendChild(el('strong', null, cost));
-    if (u.budgetUsd > 0) box.appendChild(el('span', null, 'из $' + u.budgetUsd.toFixed(2)));
-    const add = (text) => { box.appendChild(el('span', 'dot', '·')); box.appendChild(el('span', null, text)); };
-    add(fmtTokens(u.inputTokens + u.outputTokens) + ' токенов');
-    if (u.memoryHits) add(u.memoryHits + ' из памяти');
+    const cost = (u.costUsd > 0 && u.costUsd < 0.01 ? '< $0.01' : '$' + u.costUsd.toFixed(2)) + (u.costIncomplete ? '+' : '');
+    box.textContent = cost + (u.budgetUsd > 0 ? ' из $' + u.budgetUsd.toFixed(2) : '');
+    const tip = ['Расход текущего или последнего запуска: ≈ $' + u.costUsd.toFixed(4)];
+    tip.push(fmtTokens(u.inputTokens + u.outputTokens) + ' токенов');
+    if (u.memoryHits) tip.push(u.memoryHits + ' переводов из памяти');
+    if (st.cfg) tip.push(MODEL_NAMES[st.cfg.model] || st.cfg.model);
+    box.title = tip.join('\n');
     box.classList.toggle('over', u.budgetUsd > 0 && u.costUsd >= u.budgetUsd);
     box.hidden = false;
   }
@@ -907,7 +946,7 @@
     const entry = { level, time, text };
     st.logs.push(entry);
     if (st.logs.length > MAX_LOG) st.logs.splice(0, st.logs.length - MAX_LOG);
-    if (level === 'warn' || level === 'error') $('problemCount').textContent = String(st.logs.filter(isProblem).length);
+    if (level === 'warn' || level === 'error') renderProblems();
     if (!st.onlyProblems || isProblem(entry)) appendLogLine(entry, true);
   }
   function isProblem(l) { return l.level === 'warn' || l.level === 'error'; }
@@ -930,9 +969,17 @@
     if (!lines.length) box.appendChild(el('div', 'log-empty', st.onlyProblems ? 'Проблем нет.' : 'Пока пусто.'));
     lines.forEach((l) => appendLogLine(l, false));
     box.scrollTop = box.scrollHeight;
-    $('problemCount').textContent = String(st.logs.filter(isProblem).length);
+    renderProblems();
     $('fltAll').setAttribute('aria-pressed', String(!st.onlyProblems));
     $('fltProblems').setAttribute('aria-pressed', String(st.onlyProblems));
+  }
+  // Кнопка «Сообщить о проблеме» краснеет, когда в журнале есть ошибки или проект упал.
+  function renderProblems() {
+    const n = st.logs.filter(isProblem).length;
+    $('problemCount').textContent = String(n);
+    const failed = Object.values(st.statuses).some((s) => s.status === 'error');
+    const alert = failed || st.logs.some((l) => l.level === 'error');
+    $('logSendToggle').classList.toggle('alert', alert);
   }
   $('fltAll').onclick = () => { st.onlyProblems = false; renderLog(); };
   $('fltProblems').onclick = () => { st.onlyProblems = true; renderLog(); };
@@ -942,7 +989,7 @@
   $('logSendToggle').onclick = () => {
     const open = $('logSendToggle').getAttribute('aria-expanded') !== 'true';
     $('logSendToggle').setAttribute('aria-expanded', String(open));
-    $('sendLogs').hidden = !open;
+    $('sendCard').hidden = !open;
     if (open) $('sendComment').focus();
   };
   async function sendLogs(mode) {
@@ -973,12 +1020,15 @@
   }
   $('sendTelegram').onclick = () => sendLogs('telegram');
   $('sendSave').onclick = () => sendLogs('save');
-  $('logToggle').onclick = () => {
-    const open = $('logToggle').getAttribute('aria-expanded') !== 'true';
+  // Журнал по умолчанию свёрнут; выбор запоминается в этом окне.
+  function setLogOpen(open) {
     $('logToggle').setAttribute('aria-expanded', String(open));
-    $('logToggle').textContent = open ? 'Свернуть' : 'Развернуть';
-    $('log').hidden = !open;
-  };
+    $('logCard').hidden = !open;
+    if (open) $('log').scrollTop = $('log').scrollHeight;
+    try { localStorage.setItem('logOpen', open ? '1' : ''); } catch (e) {}
+  }
+  $('logToggle').onclick = () => setLogOpen($('logToggle').getAttribute('aria-expanded') !== 'true');
+  try { if (localStorage.getItem('logOpen') === '1') setLogOpen(true); } catch (e) {}
 
   // ---------- события сервера ----------
   function connectEvents() {
@@ -993,6 +1043,7 @@
         if (s.status === 'done' && st.cfg) st.cfg.projects = st.cfg.projects.filter((p) => p !== s.url);
         renderQueue();
         renderRun();
+        renderProblems();
       } else if (d === '___PROCESS_STARTED___') {
         st.running = true;
         renderAll();
@@ -1012,6 +1063,7 @@
     renderRun();
     renderQueue();
     renderUpdate();
+    renderProblems();
   }
 
   // ---------- обновления ----------
@@ -1022,9 +1074,11 @@
       upd = await res.json();
     } catch (e) { upd = null; }
     renderUpdate();
-    if (force && upd) {
-      if (upd.error) addLog('warn', '', 'Проверка обновлений: ' + upd.error);
-      else if (!upd.available) addLog('info', '', 'Установлена последняя версия (' + upd.current + ').');
+    if (force) {
+      $('updState').textContent = !upd ? 'Не удалось проверить'
+        : upd.error ? 'Не удалось проверить: ' + upd.error
+        : upd.available ? 'Доступна версия ' + upd.latest + ' — кнопка «Обновить» на главном экране'
+        : 'Установлена последняя версия';
     }
   }
   function renderUpdate() {
@@ -1037,7 +1091,12 @@
     $('updInstall').disabled = st.running;
     $('updInstall').title = st.running ? 'Дождитесь конца перевода' : '';
   }
-  $('version').onclick = () => checkUpdate(true);
+  $('checkUpdate').onclick = async () => {
+    $('checkUpdate').disabled = true;
+    $('updState').textContent = 'Проверяю…';
+    await checkUpdate(true);
+    $('checkUpdate').disabled = false;
+  };
   $('updInstall').onclick = async () => {
     const btn = $('updInstall');
     btn.disabled = true;
